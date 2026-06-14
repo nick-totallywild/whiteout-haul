@@ -1,0 +1,21 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1000, height: 1100 } });
+const errors = [];
+p.on('pageerror', e => errors.push(e.message));
+await p.addInitScript(() => { localStorage.setItem('whiteout-nick','Nick'); localStorage.setItem('whiteout-email','n@gmail.com'); localStorage.removeItem('whiteout-bot-code'); });
+await p.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await p.click('.bot-toggle');
+await p.waitForTimeout(300);
+const panelOpen = await p.locator('.bot-panel').isVisible();
+const codeLen = (await p.locator('.bot-code').inputValue()).length;
+const before = await p.evaluate(() => ({ trucks: __econ.getTruckCount(), cap: __econ.getCapacityLevel() }));
+await p.click('.bot-run');
+const statusAfterRun = await p.locator('.bot-status').innerText();
+await p.waitForTimeout(10000); // let the bot play
+const after = await p.evaluate(() => ({ trucks: __econ.getTruckCount(), cap: __econ.getCapacityLevel(), bays: __econ.getBayCount(), spd: __econ.getSpeedLevel() }));
+await p.screenshot({ path: 'verify/botpanel.png', clip: { x: 0, y: 560, width: 420, height: 540 } });
+await p.click('.bot-stop');
+const statusAfterStop = await p.locator('.bot-status').innerText();
+await b.close();
+console.log(JSON.stringify({ panelOpen, codeLen, before, after, statusAfterRun, statusAfterStop, errors }, null, 2));

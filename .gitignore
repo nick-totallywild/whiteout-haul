@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Secrets — API keys (FMP, XAI, etc.) MUST NOT be committed
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+
+# Server runtime data
+server/scores.json
+
+# Verification screenshots (dev-only artifacts)
+verify/*.png
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log

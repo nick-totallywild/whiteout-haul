@@ -1,0 +1,892 @@
+/* Whiteout Haul — UI overlay styles. The 3D canvas fills the screen;
+   everything in #ui is an HTML layer floating on top of it. */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #dfeaf2;
+  font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none; /* let clicks pass through to canvas except on controls */
+}
+
+/* Currency counter — top-right, like the reference screenshots. */
+#currency {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px 8px 12px;
+  background: #1c2b1c;
+  border: 3px solid #0d160d;
+  border-radius: 22px;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.25);
+}
+
+#currency-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 24px;
+  background: #3fa34d;
+  border-radius: 5px;
+  color: #eafbe7;
+  font-weight: 900;
+  font-size: 18px;
+  border: 2px solid #2c7a37;
+}
+
+#currency-value {
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 26px;
+  letter-spacing: 0.5px;
+  min-width: 1ch;
+  transition: color 0.2s ease;
+}
+
+/* Cash turns red and pulses while the operation is losing money. */
+#currency-value.draining {
+  color: #ff7a6a;
+  animation: drainpulse 1s ease-in-out infinite;
+}
+
+@keyframes drainpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Upkeep + net cash-flow readout, under the CASH label. */
+#net-readout {
+  position: absolute;
+  top: 86px;
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+  pointer-events: none;
+}
+
+.net-upkeep {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #c6d2dc;
+  background: rgba(20, 30, 40, 0.6);
+  padding: 1px 7px;
+  border-radius: 7px;
+}
+
+.net-rate {
+  font-size: 13px;
+  font-weight: 800;
+  padding: 1px 7px;
+  border-radius: 7px;
+  background: rgba(20, 30, 40, 0.6);
+}
+
+.net-rate.good { color: #8fe39a; }
+.net-rate.bad { color: #ff9a8a; }
+
+#currency-label {
+  position: absolute;
+  top: 64px;
+  right: 18px;
+  padding: 2px 9px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  white-space: nowrap;
+  color: #dfe9f2;
+  background: rgba(20, 30, 40, 0.7);
+  border-radius: 9px;
+}
+
+/* Upgrade buttons — bottom of screen. */
+#upgrades {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 96vw;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.upgrade-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  min-width: 104px;
+  padding: 10px 14px;
+  background: #6f7bd6;
+  border: none;
+  border-bottom: 5px solid #4a55ad;
+  border-radius: 16px;
+  color: #fff;
+  font-family: inherit;
+  text-align: center;
+  transition: transform 0.05s ease, filter 0.1s ease;
+}
+
+.upgrade-btn:hover {
+  filter: brightness(1.07);
+}
+
+.upgrade-btn:active {
+  transform: translateY(2px);
+  border-bottom-width: 3px;
+}
+
+.upgrade-btn .label {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  opacity: 0.95;
+}
+
+.upgrade-btn .level {
+  display: block;
+  font-size: 11px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
+.upgrade-btn .cost {
+  display: block;
+  font-size: 18px;
+  font-weight: 900;
+  margin-top: 6px;
+}
+
+.upgrade-btn.disabled {
+  background: #8a8f9e;
+  border-bottom-color: #6b7080;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
+
+/* Bear-raid warning banner — center-top while a bear is mauling the dock. */
+#raid-banner {
+  position: absolute;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  background: rgba(181, 72, 63, 0.92);
+  border: 2px solid #7a2c26;
+  border-radius: 12px;
+  color: #fff;
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  animation: raidpulse 0.8s ease-in-out infinite;
+}
+
+@keyframes raidpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Avalanche warning/impact banner — center-top, below the raid banner slot. */
+#avalanche-banner {
+  position: absolute;
+  top: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 20px;
+  background: rgba(70, 110, 150, 0.94);
+  border: 2px solid #cfe4f5;
+  border-radius: 12px;
+  color: #fff;
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  animation: raidpulse 0.7s ease-in-out infinite;
+}
+
+/* Truck-loss flash — center screen when the avalanche destroys a rig. */
+#loss-flash {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 12px 22px;
+  background: rgba(150, 40, 40, 0.94);
+  border: 3px solid #ffd5cc;
+  border-radius: 14px;
+  color: #fff;
+  font-weight: 900;
+  font-size: 19px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.4);
+  animation: raidpulse 0.6s ease-in-out infinite;
+}
+
+/* Manual "Hold Trucks" button — bottom-left, beside the bot toggle. */
+#hold-btn {
+  position: absolute;
+  left: 132px;
+  bottom: 16px;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  color: #eef4f8;
+  background: rgba(40, 50, 60, 0.78);
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 12px;
+}
+
+#hold-btn.active {
+  background: #c8772a;
+  border-color: #97581b;
+}
+
+/* Fence health bar — top-center, above the upgrade row indicator. */
+#fence-bar {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(20, 30, 40, 0.78);
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  border-radius: 12px;
+  pointer-events: none;
+}
+
+.fence-cap {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #dfe9f2;
+}
+
+.fence-track {
+  width: 130px;
+  height: 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.fence-fill {
+  height: 100%;
+  width: 100%;
+  background: #5fbf66;
+  transition: width 0.2s ease, background 0.2s ease;
+}
+
+/* Repair-fence button — directly under the fence bar. */
+#repair-btn {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 7px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+  background: rgba(90, 96, 110, 0.85);
+  border: none;
+  border-bottom: 4px solid rgba(0, 0, 0, 0.3);
+  border-radius: 11px;
+  white-space: nowrap;
+}
+
+#repair-btn.afford {
+  background: #c8772a;
+  border-bottom-color: #97581b;
+}
+
+#repair-btn:active {
+  transform: translateX(-50%) translateY(2px);
+  border-bottom-width: 2px;
+}
+
+/* Bot script panel — toggle button (bottom-left) + editor that opens above it. */
+.bot-toggle {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  color: #eef4f8;
+  background: rgba(40, 50, 60, 0.78);
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 12px;
+}
+
+.bot-toggle.active {
+  background: #6f7bd6;
+}
+
+/* Green dot on the Bot button while a strategy is running (visible when closed). */
+.bot-toggle.running::after {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: #45e06a;
+  box-shadow: 0 0 6px #45e06a;
+  vertical-align: middle;
+  animation: raidpulse 1.2s ease-in-out infinite;
+}
+
+/* "running / stopped" badge in the panel header. */
+.bot-run-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 8px;
+  margin-left: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #9fb0bd;
+}
+
+.bot-run-badge.on {
+  background: rgba(69, 224, 106, 0.18);
+  color: #8fe39a;
+}
+
+.bot-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 60px;
+  width: 420px;
+  padding: 10px;
+  background: rgba(18, 26, 34, 0.94);
+  border: 2px solid rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  pointer-events: auto;
+  color: #eef4f8;
+}
+
+.bot-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 800;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.bot-close {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: #9fb0bd;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.bot-ex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.bot-ex-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #9fb0bd;
+  flex: none;
+}
+
+.bot-examples {
+  flex: 1;
+  font-family: inherit;
+  font-size: 12px;
+  color: #d7e6c9;
+  background: #0f161c;
+  border: 1px solid #2a3640;
+  border-radius: 8px;
+  padding: 5px 7px;
+  cursor: pointer;
+}
+
+.bot-code {
+  width: 100%;
+  height: 150px;
+  resize: vertical;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #d7e6c9;
+  background: #0f161c;
+  border: 1px solid #2a3640;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.bot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bot-run,
+.bot-stop {
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 13px;
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 7px 14px;
+}
+
+.bot-run {
+  background: #3fa34d;
+}
+
+.bot-stop {
+  background: #b5483f;
+}
+
+.bot-status {
+  font-size: 12px;
+  color: #9fb0bd;
+}
+
+.bot-status.ok {
+  color: #8fe39a;
+}
+
+.bot-status.err {
+  color: #ff9a8a;
+}
+
+.bot-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8a98a4;
+}
+
+.bot-hint code {
+  color: #d7e6c9;
+  background: #0f161c;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+/* Reset-progress button — top-right, under the currency counter. */
+#reset-btn {
+  position: absolute;
+  top: 136px;
+  right: 18px;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: #eef4f8;
+  background: rgba(40, 50, 60, 0.72);
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+}
+
+#reset-btn:hover {
+  filter: brightness(1.18);
+}
+
+/* Move-wire button — right side, below the mute/reset row. */
+#wire-btn {
+  position: absolute;
+  top: 176px;
+  right: 18px;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: #eef4f8;
+  background: rgba(40, 50, 60, 0.72);
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+}
+
+#wire-btn:hover {
+  filter: brightness(1.18);
+}
+
+#wire-btn.active {
+  background: #c8772a;
+  border-color: #97581b;
+}
+
+/* Move-wire instruction hint — bottom-center, above the upgrade row. */
+#wire-hint {
+  position: absolute;
+  bottom: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(40, 50, 60, 0.9);
+  border: 2px solid rgba(200, 119, 42, 0.8);
+  border-radius: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Mute / unmute button — top-right, below the cash counter. */
+#mute-btn {
+  position: absolute;
+  top: 136px;
+  right: 92px;
+  pointer-events: auto;
+  cursor: pointer;
+  width: 34px;
+  height: 30px;
+  font-size: 15px;
+  line-height: 1;
+  color: #eef4f8;
+  background: rgba(40, 50, 60, 0.72);
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+}
+
+#mute-btn:hover {
+  filter: brightness(1.18);
+}
+
+#mute-btn.muted {
+  background: rgba(120, 60, 60, 0.8);
+}
+
+/* Live metal-price ticker — top-left, above the leaderboard. */
+#prices-panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 210px;
+  padding: 8px 12px 9px;
+  background: rgba(20, 30, 40, 0.82);
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  border-radius: 14px;
+  color: #eef4f8;
+  pointer-events: none;
+}
+
+#prices-panel.px-offline {
+  opacity: 0.5;
+}
+
+.px-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #c6d2dc;
+  margin-bottom: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.px-src {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #7f8c98;
+}
+
+.px-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.px-name {
+  font-size: 13px;
+  font-weight: 700;
+  flex: none;
+  width: 64px;
+}
+
+.px-val {
+  font-size: 14px;
+  font-weight: 800;
+  margin-left: auto;
+}
+
+.px-chg {
+  font-size: 11px;
+  font-weight: 800;
+  width: 64px;
+  text-align: right;
+}
+
+.px-chg.up { color: #8fe39a; }
+.px-chg.down { color: #ff9a8a; }
+
+.px-div {
+  height: 1px;
+  margin: 7px 0 6px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.px-load {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.px-load .px-name {
+  width: auto;
+  white-space: nowrap;
+}
+
+.px-load .px-val {
+  font-size: 14px;
+  font-weight: 800;
+  color: #ffe7a8;
+}
+
+.px-load.px-truck .px-val {
+  color: #cfd8e2;
+}
+
+.px-title .px-src[data-load] {
+  color: #c6d2dc;
+}
+
+/* Leaderboard panel — top-left, under the price + load ticker. */
+.lb-panel {
+  position: absolute;
+  top: 232px;
+  left: 16px;
+  width: 210px;
+  padding: 10px 12px 8px;
+  background: rgba(20, 30, 40, 0.82);
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  border-radius: 14px;
+  color: #eef4f8;
+  pointer-events: none;
+}
+
+.lb-title {
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+}
+
+.lb-sub {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #8fe39a;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.lb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: rank;
+}
+
+.lb-list li {
+  counter-increment: rank;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 0;
+  opacity: 0.92;
+}
+
+.lb-list li::before {
+  content: counter(rank) '.';
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  text-align: right;
+  margin-right: 8px;
+  opacity: 0.6;
+}
+
+.lb-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-score {
+  font-weight: 700;
+  color: #8fe39a;
+}
+
+.lb-list li.lb-me {
+  background: rgba(111, 123, 214, 0.35);
+  border-radius: 6px;
+  padding-left: 4px;
+  opacity: 1;
+}
+
+.lb-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #f2b35a;
+  min-height: 13px;
+}
+
+/* Nickname registration modal. */
+.lb-modal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 20, 28, 0.55);
+  pointer-events: auto;
+  z-index: 10;
+}
+
+.lb-card {
+  width: 320px;
+  padding: 26px 26px 22px;
+  background: #1c2b34;
+  border: 3px solid #0d1620;
+  border-radius: 20px;
+  box-shadow: 0 10px 0 rgba(0, 0, 0, 0.25);
+  text-align: center;
+  color: #eef4f8;
+}
+
+.lb-card h2 {
+  font-size: 26px;
+  margin-bottom: 6px;
+}
+
+.lb-card p {
+  font-size: 14px;
+  opacity: 0.85;
+  margin-bottom: 16px;
+}
+
+.lb-card .lb-tag {
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.35;
+  color: #bcd2e6;
+  opacity: 0.95;
+  margin-bottom: 14px;
+}
+
+/* Subtle in-game wordmark, bottom-right corner. */
+#wordmark {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #eef4f8;
+  opacity: 0.4;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+#wordmark .wm-flake {
+  color: #acd6f0;
+}
+
+.lb-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 18px;
+  font-family: inherit;
+  text-align: center;
+  border: none;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: #eef4f8;
+  color: #1c2b34;
+}
+
+.lb-error {
+  min-height: 16px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #ff9a8a;
+}
+
+.lb-go {
+  width: 100%;
+  padding: 13px;
+  font-size: 17px;
+  font-weight: 900;
+  font-family: inherit;
+  color: #fff;
+  cursor: pointer;
+  background: #3fa34d;
+  border: none;
+  border-bottom: 5px solid #2c7a37;
+  border-radius: 14px;
+}
+
+.lb-go:active {
+  transform: translateY(2px);
+  border-bottom-width: 3px;
+}

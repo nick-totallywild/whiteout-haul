@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1000, height: 900 } });
+const errors = [];
+p.on('pageerror', e => errors.push(e.message));
+p.on('console', m => { if (m.type()==='error') errors.push('console: '+m.text()); });
+await p.addInitScript(() => {
+  localStorage.setItem('whiteout-nick','Nick'); localStorage.setItem('whiteout-email','n@gmail.com');
+  localStorage.removeItem('whiteout-bot-code'); localStorage.removeItem('whiteout-bot-running');
+});
+await p.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await p.click('.bot-toggle');
+await p.evaluate(() => { window.__econ.state.cash = 100000; window.__econ.add(1); });
+await p.click('.bot-run');
+const snap = () => p.evaluate(() => ({ truck:__econ.getLevel('truck'), bay:__econ.getLevel('bay'), cap:__econ.getLevel('capacity'), speed:__econ.getLevel('speed'), tower:__econ.getLevel('tower'), fence:__econ.getLevel('fence'), cash: Math.floor(__econ.state.cash) }));
+const t0 = await snap();
+await p.waitForTimeout(8000);
+const t1 = await snap();
+await b.close();
+console.log(JSON.stringify({ t0, t1, errors }, null, 2));

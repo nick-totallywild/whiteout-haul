@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Whiteout Haul</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <!-- HTML overlay UI (filled by src/ui.js) -->
+    <div id="ui">
+      <div id="currency">
+        <span id="currency-icon">$</span>
+        <span id="currency-value">0</span>
+      </div>
+      <div id="currency-label">CASH</div>
+      <div id="upgrades"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
