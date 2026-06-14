@@ -8,8 +8,32 @@ The twist: running a mine costs money **every second** (wages, fuel), and the si
 
 ---
 
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/01-overview.png"><br><b>Operations overview</b><br>The conveyor feeds the pile; trucks queue at the loading bays, fill with silver/gold, and haul off for cash. Fenced site with a gated entrance and exit.</td>
+<td width="50%"><img src="docs/screenshots/04-bear-raid.png"><br><b>Bear raid</b><br>Waves of bears claw the perimeter fence while Santa-gunner towers fire back. A breach halts loading and blocks the lane until you repair.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/06-avalanche.png"><br><b>Avalanche</b><br>Snow crashes across the lane. Trucks caught moving are destroyed; <b>hold the convoy</b> to save them (here the bot held in time — the trucks were only "battered").</td>
+<td width="50%"><img src="docs/screenshots/03-gate.png"><br><b>Gated checkpoint</b><br>A boom gate with a guard booth and a far-side landing post; an armed M-16 guard stands watch. The exit road runs into the mountain tunnel.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/02-dashboard.png"><br><b>Live economy dashboard</b><br>Real-time FMP gold/silver spot prices with the day's change, the real-world value of a full safe load (15 t gold / 20 t silver), the truck cost, and the leaderboard.</td>
+<td width="50%"><img src="docs/screenshots/05-bot.png"><br><b>Automation bot ("cron")</b><br>The in-game scripting panel with a library of strategy building blocks. A running script keeps the operation alive 24/7 — holding for avalanches, repairing breaches, and expanding.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/07-register.png"><br><b>Registration</b><br>Pick a nickname + email (validated, never shown) to compete on the global leaderboard ranked by total earnings.</td>
+<td width="50%"></td>
+</tr>
+</table>
+
+---
+
 ## Table of contents
 
+- [Screenshots](#screenshots)
 - [Running the game](#running-the-game)
 - [The core loop](#the-core-loop)
 - [Operations management (upgrades)](#operations-management-upgrades)
