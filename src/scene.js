@@ -638,9 +638,10 @@ function buildFence() {
   const z0 = -30;
   const z1 = 15; // front edge moved down with the expanded lot
   const roadZ = LAYOUT.lane.z;
-  // Opening wide enough that the fence never overlaps the wide tunnel void
-  // behind it (otherwise the chain-link reads as grey lines across the black).
-  const halfGap = LAYOUT.lane.width / 2 + 3.5;
+  // Opening just wide enough for the road (+ a little clearance) so the gates
+  // close it cleanly — the boom post sits on the near edge, the landing post on
+  // the far edge, and there's no leftover open stretch beside the gate.
+  const halfGap = LAYOUT.lane.width / 2 + 1.5;
 
   const segments = [];
   // Full perimeter fence with a wide road gap on each side for the gates.
@@ -724,8 +725,8 @@ function buildGates() {
   const group = new THREE.Group();
   const roadZ = LAYOUT.lane.z;
   // gate posts sit just outside the fence opening, on the +z side of the road
-  group.add(buildBoomGate(40, roadZ, -0.5)); // right opening (entrance)
-  group.add(buildBoomGate(-34, roadZ, 0.5)); // left opening (exit)
+  group.add(buildBoomGate(40, roadZ)); // right opening (entrance)
+  group.add(buildBoomGate(-34, roadZ)); // left opening (exit)
   // guards beside each gate, facing the incoming trucks (+x), waving them through
   const guards = [];
   const a = placeGuard(44, roadZ + 5.5, Math.PI / 2);
@@ -739,44 +740,58 @@ function buildGates() {
   return { group, guards };
 }
 
-function buildBoomGate(x, z, armTilt) {
+function buildBoomGate(x, z) {
   const g = new THREE.Group();
   const postMat = new THREE.MeshLambertMaterial({ color: 0xf0a830 });
   const boothMat = new THREE.MeshLambertMaterial({ color: 0xb8c0cc });
+  const w = LAYOUT.lane.width;
+  const nearZ = z + w / 2 + 0.4; // +z edge of the road — boom pivot side
+  const farZ = z - w / 2 - 0.4; // -z edge of the road — landing post side
 
   // little guard booth on the +z side of the road
   const booth = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.6, 2.2), boothMat);
-  booth.position.set(x, 1.3, z + LAYOUT.lane.width / 2 + 2.2);
+  booth.position.set(x, 1.3, z + w / 2 + 2.4);
   booth.castShadow = true;
   g.add(booth);
   const boothRoof = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.4, 2.6), new THREE.MeshLambertMaterial({ color: 0x7fc7e8 }));
-  boothRoof.position.set(x, 2.8, z + LAYOUT.lane.width / 2 + 2.2);
+  boothRoof.position.set(x, 2.8, z + w / 2 + 2.4);
   g.add(boothRoof);
 
-  // boom post + striped arm (raised) reaching across the road
+  // boom pivot post on the near (+z) edge of the opening
   const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 2.4, 8), postMat);
-  post.position.set(x, 1.2, z + LAYOUT.lane.width / 2 + 0.4);
+  post.position.set(x, 1.2, nearZ);
   post.castShadow = true;
   g.add(post);
 
-  const arm = buildBoomArm();
-  arm.position.set(x, 2.1, z + LAYOUT.lane.width / 2 + 0.4);
-  arm.rotation.z = Math.PI / 2 - 0.5; // raised, open
-  arm.rotation.y = 0;
+  // landing/rest post on the FAR (-z) edge — what the arm comes down onto
+  const land = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 2.0, 8), postMat);
+  land.position.set(x, 1.0, farZ);
+  land.castShadow = true;
+  g.add(land);
+  const cradle = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.5), postMat);
+  cradle.position.set(x, 2.05, farZ); // little cradle the arm rests in
+  cradle.castShadow = true;
+  g.add(cradle);
+
+  // striped arm: pivots at the near post and spans the full road to the far post,
+  // shown raised (open) so trucks can pass.
+  const arm = buildBoomArm(nearZ - farZ);
+  arm.position.set(x, 2.1, nearZ);
+  arm.rotation.x = 0.85; // lifted up toward open
   g.add(arm);
   return g;
 }
 
-// A red/white striped barrier arm built from alternating segments.
-function buildBoomArm() {
+// A red/white striped barrier arm of `length`, extending along -z from its pivot.
+function buildBoomArm(length) {
   const arm = new THREE.Group();
   const segLen = 0.9;
-  const n = 7;
+  const n = Math.max(3, Math.round(length / segLen));
   const red = new THREE.MeshLambertMaterial({ color: 0xd0322d });
   const white = new THREE.MeshLambertMaterial({ color: 0xf4f4f4 });
   for (let i = 0; i < n; i++) {
-    const seg = new THREE.Mesh(new THREE.BoxGeometry(segLen, 0.18, 0.18), i % 2 ? white : red);
-    seg.position.x = i * segLen + segLen / 2;
+    const seg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, segLen), i % 2 ? white : red);
+    seg.position.z = -(i * segLen + segLen / 2);
     seg.castShadow = true;
     arm.add(seg);
   }
