@@ -2,7 +2,7 @@
 
 *Mine gold & silver in the frozen north — outlast the bears, the blizzards and the avalanches.*
 
-Whiteout Haul is a browser-based 3D idle/management game built with **Three.js** + **Vite** (vanilla JS, no framework). A conveyor pours silver and gold bricks onto a pile; orange dump trucks queue at the loading bay, get filled by Santa workers, and drive off — each full load that departs pays out. You spend the proceeds on upgrades to haul faster, defend the site against wildlife and weather, and climb a global leaderboard.
+Whiteout Haul is a browser-based 3D idle/management game built with **Three.js** + **Vite** (vanilla JS, no framework). A conveyor pours silver and gold bricks onto a pile; orange Freightliner dump trucks queue at the loading bay, get loaded by elves driving wheel loaders, and drive off — each full load that departs pays out. You spend the proceeds on upgrades to haul faster, defend the site against wildlife and weather, and climb a global leaderboard.
 
 The twist: running a mine costs money **every second** (wages, fuel), and the site is under constant threat (bear raids, avalanches). A human can't babysit it 24/7 — so the game ships with an in-browser **automation bot** ("cron") that keeps the operation alive while you're away.
 
@@ -12,8 +12,8 @@ The twist: running a mine costs money **every second** (wages, fuel), and the si
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/01-overview.png"><br><b>Operations overview</b><br>The conveyor feeds the pile; trucks queue at the loading bays, fill with silver/gold, and haul off for cash. Fenced site with a gated entrance and exit.</td>
-<td width="50%"><img src="docs/screenshots/04-bear-raid.png"><br><b>Bear raid</b><br>Waves of bears claw the perimeter fence while Santa-gunner towers fire back. A breach halts loading and blocks the lane until you repair.</td>
+<td width="50%"><img src="docs/screenshots/01-overview.png"><br><b>Operations overview</b><br>The conveyor feeds the pile; Freightliner trucks queue at the bays while elves on wheel loaders tip gold/silver bars into them, and they haul off for cash. Fenced site with gun towers, a gated entrance and exit.</td>
+<td width="50%"><img src="docs/screenshots/04-bear-raid.png"><br><b>Bear raid</b><br>Waves of bears prowl in and claw the perimeter fence while Santa-gunner <b>M134 minigun</b> towers fire back. A breach halts loading and blocks the lane until you repair.</td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/06-avalanche.png"><br><b>Avalanche</b><br>Snow crashes across the lane. Trucks caught moving are destroyed; <b>hold the convoy</b> to save them (here the bot held in time — the trucks were only "battered").</td>
@@ -142,9 +142,9 @@ The site is under constant threat. Ignoring any of these stops the money and ble
 ### 🐻 Bear raids
 - Bears wander in from the treeline in **waves of 2–3** (every ~9s at 0 barbed wire; rarer with more wire), from different directions, attacking the **front fence** (in clear view).
 - They **claw a fence segment down** — panels visibly sag, tint, and collapse into a gap. The fence health bar (top-center) tracks the **weakest** stretch.
-- **Breach!** When any segment is downed, bears **storm the dock**: they go after the Santa workers (who scatter in panic) and **block the truck lane** so trucks physically can't pass. No trucks moving → no income → upkeep bleeds you.
+- **Breach!** When any segment is downed, bears **storm the dock**: they go after the elf loaders (who flee in panic) and **block the truck lane** so trucks physically can't pass. No trucks moving → no income → upkeep bleeds you.
 - **Defenses:**
-  - **Gun Towers** — Santa gunners on tripod-mounted machine guns. They scan, track, and shoot bears within range (corners of the site).
+  - **Gun Towers** — Santa gunners on tripod-mounted **M134 miniguns** (with an access ladder up to the deck). They scan, track, and shoot bears within range (corners of the site).
   - **Gate Guards** — the two boom-gate guards carry **M-16s** and shoot bears near their posts. A bear that reaches a guard can **injure** them (they go down ~12s; **$300 replacement**).
   - **Barbed Wire** — concertina coils installed **in front of** the fence on the stretches gunfire can't reach (the front-center gap). Bears must chew through a coil first and get **shredded** doing it. **You can drag coils** to reposition them (🧷 Move Wire button), and they **take damage too** — torn wire is folded into the repair bill.
   - **🔧 Repair Fence** — a button (and bot action) that pays to restore the wire and panels and **drives off any bears that got inside**. Repair cost scales with total damage (remote-site materials premium).
@@ -232,10 +232,11 @@ At a gold price of ~$4,240/oz this makes a full gold load worth **~$2 billion** 
 
 ## Sound
 
-All effects are **synthesized at runtime** via the Web Audio API (no audio files):
-- 🔫 machine-gun rattle (tower/guard fire)
-- 🐻 bear roars (on spawn)
-- 💰 ka-ching (each paid delivery)
+Sound is mostly **synthesized at runtime** via the Web Audio API:
+- 🔫 a deep, sustained **M134 minigun roar** (towers) and a full-auto **M-16 rattle** (guards)
+- 🐻 bear roar — a recorded growl sample (`public/bear-growl.mp3`), with a synth fallback
+- 🚚 a deep diesel **engine bed** with rev (accel) and air-brake (stop) for the trucks
+- 💰 a heavy **"payday"** plus a **metal-scrap clatter** as gold/silver bars land in the bed
 - 🚨 breach alarm, 🏔️ avalanche rumble + crash
 
 Audio unlocks on your first click/keypress (browser policy). Toggle with the **🔊 mute** button (top-right).
