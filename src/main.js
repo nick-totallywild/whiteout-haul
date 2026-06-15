@@ -23,7 +23,7 @@ const world = createWorld(canvas);
 
 const economy = createEconomy();
 const sfx = createSfx(); // procedural sound: gunfire, bear roars, cash, alarm
-const fleet = createFleet(world.scene);
+const fleet = createFleet(world.scene, sfx);
 const conveyor = createConveyor(world.scene);
 const bears = createBears(world.scene, sfx, world.fence.segments, world.guards); // bear raids + tower & guard defenses
 const avalanche = createAvalanche(world.scene, sfx); // avalanche challenge
@@ -63,16 +63,20 @@ function repairFence() {
 // manual button; the fleet is held if either wants it. Effective hold is applied
 // in the game loop.
 let botHold = false;
+let botHoldMode = 'all'; // 'all' = freeze everyone; 'escape' = run the front trucks out
 let manualHold = false;
-function holdTrucks(on) {
+// The bot calls this. mode 'escape' lets trucks near the tunnel outrun the snow
+// instead of freezing the whole convoy (fewer dents, keeps deliveries flowing).
+function holdTrucks(on, mode = 'all') {
   botHold = !!on;
+  botHoldMode = mode === 'escape' ? 'escape' : 'all';
   return true;
 }
 
 // Online leaderboard (nickname registration + global scores) and the scripting
 // Bot API (window.WhiteoutBot) so players can automate to climb the leaderboard.
 const leaderboard = createLeaderboard(economy);
-const bot = createBot(economy, handleBuy, bears, repairFence, { holdTrucks, avalanche });
+const bot = createBot(economy, handleBuy, bears, repairFence, { holdTrucks, avalanche, fleet });
 createBotPanel(); // in-game editor for attaching a strategy to WhiteoutBot
 const prices = createPrices(economy); // live spot prices + real full-load values
 
@@ -213,6 +217,8 @@ if (localStorage.getItem('whiteout-admin') === '1') {
 
 // Dev hooks for headless balance testing (harmless in normal play).
 window.__econ = economy;
+window.__fleet = fleet; // exposes truck/escape state for verification clips
+window.__sfx = sfx; // exposes the audio engine for verification
 window.__buy = handleBuy;
 window.__reset = resetProgress;
 window.__world = world; // exposes { scene, camera, renderer } for verification clips
@@ -306,6 +312,7 @@ function stepOnce(dt) {
   // requested, and destroy any truck caught in the snow zone.
   avalanche.update(dt);
   const avState = avalanche.state();
+  world.setAvalancheHold(avState !== 'idle'); // loaders stop & hold clear during an avalanche
   if (avState === 'warning') {
     avBanner.style.display = 'block';
     avBanner.textContent = '🏔️ AVALANCHE WARNING — HOLD THE TRUCKS!';
@@ -319,7 +326,11 @@ function stepOnce(dt) {
     lossFlashT -= dt;
     if (lossFlashT <= 0) { lossFlash.style.display = 'none'; lossAccum = 0; }
   }
-  fleet.setHold(botHold || manualHold);
+  // Manual hold is the panic button (freeze all); the bot may instead ask for
+  // 'escape' so the trucks nearest the tunnel make a run for it.
+  const wantHold = botHold || manualHold;
+  const holdMode = manualHold ? 'all' : botHoldMode;
+  fleet.setHold(wantHold, holdMode, avalanche.secondsUntilLethal());
   // The instant the snow lands: trucks that were HELD but stuck in the zone take
   // a partial dig-out/repair hit (they survive). Moving trucks are destroyed
   // continuously below for as long as the snow blocks the lane.
@@ -342,6 +353,7 @@ function stepOnce(dt) {
   }
 
   fleet.update(dt);
+  world.setTruckXs(fleet.settledTruckXs()); // tell the loaders where trucks have stopped
   world.update(dt);
   bot.tick(dt);
   leaderboard.tick(dt);

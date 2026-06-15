@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tower preview</title>
+<style>html,body{margin:0;height:100%;background:#cfe0ee}#c{display:block;width:100vw;height:100vh}</style></head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { buildTower } from '/src/bears.js';
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xcfe0ee);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa7b5, 0.95));
+const sun = new THREE.DirectionalLight(0xffffff, 1.15);
+sun.position.set(8, 16, 12); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024); scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: 0xeef4fa, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+const t = buildTower(new THREE.Vector3(0, 0, 0));
+t.group.visible = true;
+t.mount.rotation.y = 0; // aim the gun toward +Z (at the camera side)
+scene.add(t.group);
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(7, 6.2, 9); camera.lookAt(0, 5.0, 1.5);
+
+// spin the barrels like it's firing, so the cluster reads as a minigun
+let spin = 0;
+function loop(){ spin += 0.5; t.barrels.rotation.z = spin; renderer.render(scene, camera); requestAnimationFrame(loop); }
+loop();
+window.__ready = true;
+</script>
+</body>
+</html>

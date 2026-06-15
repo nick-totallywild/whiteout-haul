@@ -135,13 +135,16 @@ export const BEARS = {
   baseSpawnInterval: 9, // seconds between bears at 0 barbed wire
   spawnPerFence: 2, // each barbed-wire level adds this many seconds between raids
   speed: 3.2, // bear walk speed (world units/sec)
-  hp: 5, // tower hits to down a bear (tanky enough to reach the fence and claw)
+  hp: 5, // health a bear has (whittled down by the towers' rapid fire)
   maulTime: 5, // seconds a breaching bear halts loading before it leaves
   target: new THREE.Vector3(6, 0, -9), // the dock point bears head for
   // Tighter firing range so towers engage bears AT the fence, not snipe them
   // out in the treeline — the player actually sees the bears reach the wire.
   towerRange: 19, // gun tower firing range
-  towerFireInterval: 0.7, // seconds between shots per tower
+  // M134-style minigun: very fast cadence, tiny damage per round (so the
+  // visible rate of fire is high but the time-to-down a bear stays ~3s).
+  towerFireInterval: 0.06, // seconds between rounds per tower (~16/s)
+  towerDamage: 0.1, // damage per round (hp 5 -> ~3s of sustained fire to down)
 };
 
 // ---- Real-world economy reference ----
@@ -161,7 +164,8 @@ export const REAL = {
 // while and you must pay to bring in a replacement.
 export const GUARDS = {
   range: 22, // rifle engagement range
-  fireInterval: 0.45, // seconds between shots
+  fireInterval: 0.09, // seconds between rounds — full-auto M-16 (~11/s)
+  damage: 0.18, // damage per round (auto fire, so ~2 dmg/s like before)
   injureRadius: 5.5, // a bear this close to a guard can maul them
   injureChancePerSec: 0.3, // chance/sec of injury while a bear is that close
   downTime: 12, // seconds a guard is out of action

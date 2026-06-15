@@ -15,9 +15,11 @@ const EXAMPLES = {
 // Order matters: defend first (keep money flowing), then grow with the surplus.
 
 // 1) DEFEND -----------------------------------------------------------------
-// Avalanche incoming or still on the lane -> HOLD the convoy (buried trucks are
-// a huge loss). Auto-releases the moment it's clear.
-bot.holdTrucks(s.avalancheDanger);
+// Avalanche incoming or still on the lane -> defend the convoy (buried trucks
+// are a huge loss). 'escape' lets the trucks nearest the tunnel run clear while
+// the rest wait safely — fewer dents than a blanket freeze. Auto-releases when
+// it's clear. (Swap 'escape' for 'all' to just freeze the whole convoy.)
+bot.holdTrucks(s.avalancheDanger, 'escape');
 
 // Bears smashed the fence -> REPAIR now so the lane reopens. Do the emergency
 // before anything else this tick.
@@ -48,6 +50,12 @@ for (const k of priority) {
   'Avalanche emergency': `// Building block: hold the convoy whenever snow is incoming or on the lane.
 // On its own this never grows your operation — bolt it onto a buy routine.
 bot.holdTrucks(s.avalancheDanger);`,
+
+  'Avalanche escape (smart)': `// Building block: smarter avalanche defense. Trucks close enough to the tunnel
+// FLOOR IT and clear the lane (no loss, and they still deliver); the rest wait
+// just clear of the snow. s.avalancheEscape = { run, hold, trap, inZone } shows
+// the triage live; s.avalancheLethalIn is the seconds-to-impact countdown.
+bot.holdTrucks(s.avalancheDanger, 'escape');`,
 
   'Fence repair': `// Building block: patch the perimeter the moment bears smash through, so the
 // trucks roll again. (While breached, bears block the lane -> no income.)
@@ -92,7 +100,7 @@ export function createBotPanel() {
       <button class="bot-stop">■ Stop</button>
       <span class="bot-status"></span>
     </div>
-    <div class="bot-hint">Vars: <code>s</code> (state) &amp; <code>bot</code>. <code>s.avalancheDanger</code>, <code>s.fenceBroken</code>, <code>s.netPerSec</code>. Calls: <code>bot.buy('bay')</code>, <code>bot.repairFence()</code>, <code>bot.holdTrucks(true)</code>. Examples are building blocks — combine &amp; tune your own.</div>`;
+    <div class="bot-hint">Vars: <code>s</code> (state) &amp; <code>bot</code>. <code>s.avalancheDanger</code>, <code>s.avalancheEscape</code>, <code>s.fenceBroken</code>, <code>s.netPerSec</code>. Calls: <code>bot.buy('bay')</code>, <code>bot.repairFence()</code>, <code>bot.holdTrucks(true,'escape')</code>. Examples are building blocks — combine &amp; tune your own.</div>`;
   document.body.appendChild(panel);
 
   const code = panel.querySelector('.bot-code');
