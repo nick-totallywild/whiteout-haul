@@ -17,7 +17,7 @@
 import { BRICK } from './config.js';
 
 export function createBot(economy, buyFn, bears, repairFn, extras = {}) {
-  const { holdTrucks: holdFn, avalanche } = extras;
+  const { holdTrucks: holdFn, avalanche, fleet } = extras;
   let strategy = null;
   let lastScore = economy.getScore();
   let incomeEst = 0;
@@ -52,6 +52,15 @@ export function createBot(economy, buyFn, bears, repairFn, extras = {}) {
       // snow is incoming OR still on the lane (warning→impact→settle) — keep the
       // trucks HELD until it's fully cleared, or they drive into it and get buried
       avalancheDanger: avalanche ? avalanche.state() !== 'idle' : false,
+      // seconds before the lane turns deadly (null when no avalanche is active)
+      avalancheLethalIn: avalanche && isFinite(avalanche.secondsUntilLethal())
+        ? Math.round(avalanche.secondsUntilLethal() * 10) / 10
+        : null,
+      // how an 'escape' hold would triage the convoy right now: { run, hold,
+      // trap, inZone }. `run` trucks bolt for the tunnel and survive; `trap`
+      // trucks are stuck in the zone and take a dig-out dent. Use this to decide
+      // between bot.holdTrucks(true,'escape') (save the runners) and a freeze.
+      avalancheEscape: fleet ? fleet.escapeTriage() : { run: 0, hold: 0, trap: 0, inZone: 0 },
       upgrades: economy.upgradeKeys, // truck, capacity, speed, bay, fence, tower
       costs,
       affordable,
@@ -70,10 +79,12 @@ export function createBot(economy, buyFn, bears, repairFn, extras = {}) {
     return typeof repairFn === 'function' ? repairFn() === true : false;
   }
 
-  // Hold (true) / release (false) the convoy — use during an avalanche so moving
-  // trucks don't get buried.
-  function holdTrucks(on) {
-    return typeof holdFn === 'function' ? holdFn(on) === true : false;
+  // Hold (true) / release (false) the convoy during an avalanche so moving
+  // trucks don't get buried. mode 'all' (default) freezes the whole convoy;
+  // mode 'escape' lets trucks near the tunnel make a run for it (and clear the
+  // lane) while the rest wait safely — fewer dents, deliveries keep flowing.
+  function holdTrucks(on, mode = 'all') {
+    return typeof holdFn === 'function' ? holdFn(on, mode) === true : false;
   }
 
   function setStrategy(fn) {
@@ -106,6 +117,7 @@ export function createBot(economy, buyFn, bears, repairFn, extras = {}) {
   window.WhiteoutBot = api;
   console.log('%c[WhiteoutBot] ready.', 'color:#3fa34d;font-weight:bold');
   console.log('Upkeep drains cash 24/7 — keep the trucks moving or go bankrupt. State: s.netPerSec, s.burnPerSec, s.fenceBroken, s.repairCost. Actions: bot.buy(key), bot.repairFence().');
+  console.log("Avalanche: bot.holdTrucks(s.avalancheDanger, 'escape') runs the front trucks out the tunnel instead of freezing all. See s.avalancheEscape {run,hold,trap} + s.avalancheLethalIn.");
   console.log('Try: WhiteoutBot.setStrategy(s => { if (s.fenceBroken && s.cash>=s.repairCost) return WhiteoutBot.repairFence(); const k=s.upgrades.filter(x=>s.affordable[x]).sort((a,b)=>s.costs[a]-s.costs[b])[0]; if(k) WhiteoutBot.buy(k); })');
 
   return { tick };

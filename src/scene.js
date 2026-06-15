@@ -4,6 +4,7 @@
 // modules add their meshes to.
 
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { COLORS, CAMERA, LAYOUT, TRUCK, ECONOMY } from './config.js';
 import { buildParkedTruck } from './trucks.js';
 
@@ -26,6 +27,13 @@ export function createWorld(canvas) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  // A soft image-based environment so PBR (MeshStandard) materials — the
+  // remodeled bears and gunners — pick up gentle highlights and metallic
+  // reflections. Only affects MeshStandard/Physical materials; the flat-shaded
+  // Lambert world is untouched. Generated once, no external asset needed.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
   const camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.1, 500);
   camera.position.copy(CAMERA.position);
@@ -64,6 +72,9 @@ export function createWorld(canvas) {
 
   let clock = 0;
   let underAttack = false; // bears inside the fence — Santas panic and scatter
+  let avalancheHold = false; // avalanche incoming/on the lane — loaders hold clear
+  let truckXs = []; // x of trucks stopped at the bay — loaders only serve a near one
+  const SERVE_RANGE = 5; // how close (in x, ≈1 truck slot) a stopped truck must be
   function update(dt) {
     clock += dt;
     snow.update(dt);
@@ -73,17 +84,78 @@ export function createWorld(canvas) {
       const want = underAttack ? 1 : 0;
       s.panic += (want - s.panic) * Math.min(1, dt * 4); // ease in/out
       const p = s.panic;
-      s.mesh.position.y = s.baseY + Math.abs(Math.sin(clock * (3 + p * 9) + s.phase)) * (0.18 + p * 0.14);
-      s.mesh.position.x = s.baseX + Math.sin(clock * (0.8 + p * 4) + s.phase) * (0.4 + p * 0.7);
-      s.mesh.position.z = s.baseZ - p * 3.2; // back away from the bears on the lane
-      s.mesh.rotation.x = Math.sin(clock * 2.4 + s.phase) * 0.14 * (1 - p);
-      s.mesh.rotation.y = s.rotY + p * Math.PI; // turn to run
+      const u = s.mesh.userData;
+      const k = (rate) => Math.min(1, dt * rate); // smoothing helper
+
+      // Service cycle: wait outside the lot -> dart in (bucket rising) -> hold
+      // the load high over the bed -> reverse back out. Bears interrupt it: drop
+      // the load and retreat well clear of the lane.
+      // The bucket is assumed already loaded (bars always in it). A loader just
+      // waits outside, darts in to a stopped truck, TIPS the bucket to drop the
+      // load into the bed, then reverses back out. Only the bucket tilts.
+      if (p > 0.4) {
+        // bears inside: level the bucket and retreat well clear of the lane
+        s.tip += (0 - s.tip) * k(5);
+        s.z += ((s.baseZ - 3) - s.z) * k(3.5);
+        s.state = 'wait';
+        s.timer = 1.5;
+      } else if (avalancheHold) {
+        // avalanche incoming / on the lane: stop and hold at staging until clear
+        s.tip += (0 - s.tip) * k(4);
+        s.z += (s.baseZ - s.z) * k(4);
+        s.state = 'wait';
+        s.timer = 0.3;
+      } else {
+        s.timer -= dt;
+        if (s.state === 'wait') {
+          s.tip += (0 - s.tip) * k(5); // bucket level (holding the load)
+          s.z += (s.baseZ - s.z) * k(5);
+          // only move in once a truck has actually stopped within ~1 slot of us
+          const truckHere = truckXs.some((tx) => Math.abs(tx - s.baseX) < SERVE_RANGE);
+          if (s.timer <= 0 && truckHere) s.state = 'serve';
+        } else if (s.state === 'serve') {
+          s.tip += (0 - s.tip) * k(6); // carry it in level
+          s.z += (s.targetZ - s.z) * k(7); // dart in fast
+          if (Math.abs(s.z - s.targetZ) < 0.15) { s.state = 'dump'; s.timer = 0.6; }
+        } else if (s.state === 'dump') {
+          s.tip += (1 - s.tip) * k(7); // tip the bucket forward to drop the load
+          if (s.timer <= 0) s.state = 'return';
+        } else { // return
+          s.tip += (0 - s.tip) * k(6); // level the bucket again
+          s.z += (s.baseZ - s.z) * k(7); // reverse back out fast
+          if (Math.abs(s.z - s.baseZ) < 0.15) { s.state = 'wait'; s.timer = 0.5 + (s.phase % 2) * 0.4; }
+        }
+      }
+
+      s.mesh.position.set(s.baseX + p * Math.sin(clock * 7 + s.phase) * 0.3, 0, s.z);
+      s.mesh.rotation.y = s.rotY + p * 0.4 * Math.sin(clock * 4 + s.phase);
+      if (u.bucket) u.bucket.rotation.x = u.bucketX0 + s.tip * 1.15; // only the bucket tilts, to dump
+      if (u.arms) {
+        const a = -0.1 + (s.state === 'serve' || s.state === 'return' ? 0.18 : 0); // grip while driving
+        for (const arm of u.arms) arm.rotation.x = a;
+      }
     }
-    // Guards swing an arm to beckon trucks in — unless they're shooting a bear
-    // (aiming) or down injured.
+    // Guards stand at the post holding the rifle two-handed at the low ready;
+    // when a bear comes into range they smoothly raise it to a shouldered aim
+    // (a small, natural motion) and chatter with recoil.
     for (const gd of gates.guards) {
-      if (gd.down || gd.aiming) continue;
-      gd.wave.rotation.x = -1.1 + Math.sin(clock * 6 + gd.phase) * 0.7;
+      if (gd.down) continue;
+      gd.aimT = (gd.aimT || 0) + ((gd.aiming ? 1 : 0) - (gd.aimT || 0)) * Math.min(1, dt * 10);
+      const a = gd.aimT;
+      const breathe = Math.sin(clock * 1.6 + gd.phase) * 0.03 * (1 - a); // subtle idle life
+      // right (trigger) hand stays on the grip; left (support) hand on the foregrip
+      gd.wave.rotation.x = -0.6 - 0.75 * a;
+      gd.wave.rotation.z = 0.5 - 0.1 * a;
+      if (gd.larm) {
+        gd.larm.rotation.x = -1.15 - 0.3 * a;
+        gd.larm.rotation.z = -0.4 - 0.15 * a;
+      }
+      // weapon: low-ready across the body -> shouldered and level when aiming
+      if (gd.gun) {
+        gd.gun.position.set(0.12 - 0.07 * a, 1.2 + 0.3 * a + breathe, 0.22 + 0.06 * a);
+        gd.gun.rotation.x = 0.18 * (1 - a); // muzzle dips at the ready, levels to aim
+        if (gd.aiming) gd.gun.position.z += Math.sin(clock * 46) * 0.02 * a; // recoil
+      }
     }
   }
 
@@ -94,8 +166,14 @@ export function createWorld(canvas) {
   function setUnderAttack(v) {
     underAttack = !!v;
   }
+  function setAvalancheHold(v) {
+    avalancheHold = !!v;
+  }
+  function setTruckXs(xs) {
+    truckXs = xs || [];
+  }
 
-  return { scene, camera, renderer, fence, guards: gates.guards, setUnderAttack, update, render };
+  return { scene, camera, renderer, fence, guards: gates.guards, setUnderAttack, setAvalancheHold, setTruckXs, update, render };
 }
 
 // Deterministic PRNG (mulberry32) so the forest/drift layout is stable across
@@ -360,98 +438,216 @@ function buildParking() {
   return group;
 }
 
-// Little "santa" loader figures working at the loading bay. They stand just in
-// front of the pile (clear of the falling blocks) and bob/lean as if shovelling
-// metal into the trucks. Returns the group plus per-figure animation state.
+// Elf-driven wheel loaders. They STAGE behind the bay (clear of the truck lane),
+// then dart in to a stopped truck with the bucket already raised, hold it high
+// over the bed, and reverse back out. Returns the group + per-loader state.
 function buildWorkers() {
   const group = new THREE.Group();
-  // z ~ -8.5: in front of the pile front edge (pile centre z=-18, radius 6 →
-  // front at -12) and just behind the bay truck (z=-7), so no blocks land on them.
-  // One worker near each potential loading bay (bays run from x≈-6 toward the
-  // entrance, spaced by the queue gap), facing the trucks at the lane (z=-7).
+  // Staging row at z≈-11 — behind the pile/bay, off the truck lane (z=-7). Each
+  // loader darts forward to ~z=-8 (right up to the truck) to dump, then back.
   const spots = [
-    [-6, -9, 0.1],
-    [0, -9.2, -0.1],
-    [6, -9, 0.15],
-    [12, -9.2, -0.1],
-    [18, -9, 0.2],
+    [-6, -11, 0.1],
+    [0, -11.2, -0.1],
+    [6, -11, 0.15],
+    [12, -11.2, -0.1],
+    [18, -11, 0.2],
   ];
   const santas = [];
   let i = 0;
   for (const [x, z, rot] of spots) {
-    const s = buildSanta();
+    const s = buildLoader(); // elves driving wheel loaders, lifting bars into the trucks
     s.position.set(x, 0, z);
     s.rotation.y = rot;
     group.add(s);
-    santas.push({ mesh: s, baseX: x, baseY: 0, baseZ: z, rotY: rot, phase: i * 2.1, panic: 0 });
+    santas.push({
+      mesh: s, baseX: x, baseY: 0, baseZ: z, rotY: rot, phase: i * 2.1, panic: 0,
+      state: 'wait', timer: 1.2 + i * 0.7, z, tip: 0, targetZ: -8,
+    });
     i++;
   }
   return { group, santas };
 }
 
-function buildSanta() {
+// A Christmas elf (Buddy-the-Elf style): green tunic with a white fur collar and
+// gold trim, a floppy green pointed hat with a gold band, curly hair, pointed
+// ears and curly-toe shoes. Faces +Z (arms reach forward = a loading gesture).
+// Arms hang on shoulder PIVOTS exposed via g.userData.arms so the yard animation
+// can pump them naturally. Same skeleton/scale as the tower gunner.
+export function buildElf() {
   const g = new THREE.Group();
-  const red = new THREE.MeshLambertMaterial({ color: 0xd0322d });
-  const white = new THREE.MeshLambertMaterial({ color: 0xf6f6f6 });
-  const black = new THREE.MeshLambertMaterial({ color: 0x262626 });
-  const skin = new THREE.MeshLambertMaterial({ color: 0xe8b58f });
+  const green = new THREE.MeshStandardMaterial({ color: 0x2f7d3a, roughness: 0.7, metalness: 0.0 });
+  const greenDk = new THREE.MeshStandardMaterial({ color: 0x245f2d, roughness: 0.75, metalness: 0.0 });
+  const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.85, metalness: 0.0 });
+  const gold = new THREE.MeshStandardMaterial({ color: 0xd9b44a, roughness: 0.35, metalness: 0.85 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xe1a982, roughness: 0.75, metalness: 0.0 });
+  const hair = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.9, metalness: 0.0 });
+  const ball = (r, mat, seg = 12) => new THREE.Mesh(new THREE.SphereGeometry(r, seg, Math.max(8, seg - 4)), mat);
+  const box = (w, h, d, mat) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  const bone = (a, b, rA, rB, mat) => {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rB, rA, dir.length(), 8), mat);
+    m.position.copy(a).addScaledVector(dir, 0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    return m;
+  };
 
-  // Two black boots.
-  for (const x of [-0.22, 0.22]) {
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.4, 0.6), black);
-    boot.position.set(x, 0.2, 0.05);
-    g.add(boot);
+  // Green tights + curly-toe elf shoes.
+  for (const x of [-0.16, 0.16]) {
+    g.add(bone(new THREE.Vector3(x, 0.72, 0), new THREE.Vector3(x, 0.2, 0.02), 0.13, 0.11, greenDk));
+    const shoe = box(0.24, 0.18, 0.4, greenDk);
+    shoe.position.set(x, 0.1, 0.08);
+    g.add(shoe);
+    const toe = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.24, 8), gold);
+    toe.rotation.x = -1.3; // curls up at the toe
+    toe.position.set(x, 0.17, 0.3);
+    g.add(toe);
   }
 
-  // Chunky red torso (box) — clearly a body, not a cone.
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.05, 0.7), red);
-  torso.position.y = 1.0;
-  g.add(torso);
-
-  // White coat trim down the front + black belt with buckle.
-  const trim = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.05, 0.04), white);
-  trim.position.set(0, 1.0, 0.36);
+  // Flared green tunic with a gold front trim + gold hem.
+  const coat = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.42, 0.92, 14), green);
+  coat.position.y = 1.04;
+  g.add(coat);
+  const trim = box(0.1, 0.92, 0.05, gold);
+  trim.position.set(0, 1.04, 0.4);
   g.add(trim);
-  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.99, 0.22, 0.74), black);
-  belt.position.y = 0.7;
-  g.add(belt);
-  const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.18, 0.04), white);
-  buckle.position.set(0, 0.7, 0.38);
-  g.add(buckle);
+  const hem = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.08, 14), gold);
+  hem.position.y = 0.6;
+  g.add(hem);
 
-  // Arms reaching forward (loading gesture).
-  for (const x of [-0.62, 0.62]) {
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.7), red);
-    arm.position.set(x, 1.15, 0.3);
-    arm.rotation.x = -0.5;
-    g.add(arm);
-    const mitten = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.26), white);
-    mitten.position.set(x, 1.0, 0.62);
-    g.add(mitten);
+  // Fluffy white fur collar (a thick ring around the shoulders).
+  const collar = new THREE.Mesh(new THREE.TorusGeometry(0.27, 0.12, 8, 16), white);
+  collar.rotation.x = Math.PI / 2;
+  collar.position.y = 1.5;
+  g.add(collar);
+
+  // Arms on shoulder pivots (green sleeves, skin hands), default reaching forward.
+  g.userData.arms = [];
+  for (const x of [-0.34, 0.34]) {
+    const sx = Math.sign(x);
+    const pivot = new THREE.Group();
+    pivot.position.set(x, 1.4, 0);
+    const o = new THREE.Vector3(0, 0, 0);
+    const elbow = new THREE.Vector3(sx * 0.32 - x, 1.24 - 1.4, 0.22);
+    const hand = new THREE.Vector3(sx * 0.22 - x, 1.12 - 1.4, 0.4);
+    pivot.add(bone(o, elbow, 0.12, 0.1, green));
+    pivot.add(bone(elbow, hand, 0.1, 0.09, green));
+    const mitt = ball(0.11, skin, 8); mitt.position.copy(hand);
+    pivot.add(mitt);
+    g.add(pivot);
+    g.userData.arms.push(pivot);
   }
 
-  // Head with a big white beard.
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.46, 0.46), skin);
-  head.position.y = 1.85;
+  // Head, curly hair tufts, pointed elf ears.
+  const head = ball(0.22, skin);
+  head.position.y = 1.66;
   g.add(head);
-  const beard = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.2), white);
-  beard.position.set(0, 1.72, 0.22);
-  g.add(beard);
+  for (const [hx, hz] of [[-0.18, 0.06], [0.18, 0.06], [-0.12, -0.14], [0.12, -0.14], [0, 0.2]]) {
+    const tuft = ball(0.09, hair, 8);
+    tuft.position.set(hx, 1.75, hz);
+    g.add(tuft);
+  }
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.2, 6), skin);
+    ear.rotation.z = -s * 1.0; // point outward/up
+    ear.position.set(s * 0.22, 1.69, 0);
+    g.add(ear);
+  }
 
-  // Red hat with white brim + pom.
-  const brim = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.16, 0.52), white);
-  brim.position.y = 2.12;
-  g.add(brim);
-  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.55, 10), red);
-  hat.position.set(0, 2.42, -0.05);
+  // Floppy green pointed hat with a gold band.
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.235, 0.26, 0.12, 14), gold);
+  band.position.y = 1.84;
+  g.add(band);
+  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.62, 12), green);
+  hat.position.set(0, 2.16, -0.03);
+  hat.rotation.x = -0.32; // floppy lean back
   g.add(hat);
-  const pom = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), white);
-  pom.position.set(0, 2.7, -0.1);
-  g.add(pom);
+  const tip = ball(0.05, green, 6);
+  tip.position.set(0, 2.46, -0.16);
+  g.add(tip);
 
-  g.traverse((o) => {
-    if (o.isMesh) o.castShadow = true;
-  });
+  g.traverse((o) => o.isMesh && (o.castShadow = true));
+  return g;
+}
+
+// A compact wheel loader (Bobcat-style) with an elf in the glass cab. Faces +Z
+// (bucket forward, toward the trucks). Exposes g.userData.boom (lift arms +
+// bucket, raises on a pivot) and g.userData.arms (the elf's, working the controls).
+export function buildLoader() {
+  const g = new THREE.Group();
+  const white = new THREE.MeshStandardMaterial({ color: 0xeef0f2, roughness: 0.5, metalness: 0.2 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x34373d, roughness: 0.5, metalness: 0.6 });
+  const orange = new THREE.MeshStandardMaterial({ color: 0xd5541f, roughness: 0.5, metalness: 0.4 });
+  const tire = new THREE.MeshStandardMaterial({ color: 0x141418, roughness: 0.85, metalness: 0.0 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x9aa1ab, roughness: 0.4, metalness: 0.85 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x2a3f4d, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.45 });
+  const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  const bone = (a, b, r, m) => {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const me = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dir.length(), 8), m);
+    me.position.copy(a).addScaledVector(dir, 0.5);
+    me.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    return me;
+  };
+
+  // Body: rear engine block + lower front, white.
+  const rear = box(1.15, 0.8, 1.0, white); rear.position.set(0, 0.75, -0.7); g.add(rear);
+  const mid = box(1.05, 0.55, 1.0, white); mid.position.set(0, 0.5, 0.2); g.add(mid);
+
+  // Glass cab + white roof + corner pillars (the elf shows through the tint).
+  const cab = box(0.92, 1.25, 0.92, glass); cab.position.set(0, 1.55, -0.45); g.add(cab);
+  const roof = box(1.0, 0.1, 1.0, white); roof.position.set(0, 2.2, -0.45); g.add(roof);
+  for (const [px, pz] of [[0.46, 0.0], [-0.46, 0.0], [0.46, -0.9], [-0.46, -0.9]]) {
+    const p = box(0.06, 1.3, 0.06, dark); p.position.set(px, 1.55, pz); g.add(p);
+  }
+
+  // Wheels: four big, black tires + orange rims (axles along X).
+  const wheelAt = (x, z) => {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.3, 16), tire);
+    w.rotation.z = Math.PI / 2; w.position.set(x, 0.4, z); g.add(w);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.12, 14), orange);
+    rim.rotation.z = Math.PI / 2; rim.position.set(x + Math.sign(x) * 0.16, 0.4, z); g.add(rim);
+  };
+  wheelAt(0.6, 0.55); wheelAt(-0.6, 0.55); wheelAt(0.6, -0.95); wheelAt(-0.6, -0.95);
+
+  // Boom: lift arms + a dark bucket on a pivot near the body front, so it can
+  // scoop low and raise in an arc.
+  // Lift arms FIXED in the raised carry position — the loader keeps the load up
+  // high the whole time; only the bucket tilts to tip the bars out.
+  for (const ax of [0.42, -0.42]) {
+    g.add(bone(new THREE.Vector3(ax, 1.05, -0.05), new THREE.Vector3(ax, 2.5, 1.0), 0.08, steel));
+  }
+  g.add(bone(new THREE.Vector3(0, 0.72, 0.1), new THREE.Vector3(0, 2.0, 0.85), 0.05, steel)); // tilt ram
+
+  // Bucket on its OWN pivot at the arm ends, so only the bucket moves (tilts) to
+  // dump — the arms stay put. Default = level (holding the bars), high + forward
+  // (≈ just above a truck bed).
+  const bucket = new THREE.Group();
+  bucket.position.set(0, 2.5, 1.0); // hinge
+  const bottom = box(1.05, 0.08, 0.6, dark); bottom.position.set(0, -0.06, 0.33); bucket.add(bottom);
+  const back = box(1.05, 0.5, 0.08, dark); back.position.set(0, 0.18, 0.03); bucket.add(back);
+  for (const sx of [0.52, -0.52]) { const side = box(0.07, 0.5, 0.6, dark); side.position.set(sx, 0.14, 0.33); bucket.add(side); }
+  const lip = box(1.05, 0.12, 0.1, steel); lip.position.set(0, -0.12, 0.62); bucket.add(lip);
+  // a heap of gold/silver bars riding in the bucket
+  const barSilver = new THREE.MeshStandardMaterial({ color: 0xc6ccd6, roughness: 0.35, metalness: 0.9 });
+  const barGold = new THREE.MeshStandardMaterial({ color: 0xf2c14e, roughness: 0.3, metalness: 0.95 });
+  for (const [bx, by, bz, mat, ry] of [
+    [-0.22, 0.02, 0.28, barSilver, 0.1], [0.04, 0.02, 0.36, barGold, -0.2], [0.24, 0.02, 0.24, barSilver, 0.05],
+    [-0.06, 0.12, 0.32, barSilver, 0.3], [0.16, 0.12, 0.26, barGold, -0.12],
+  ]) {
+    const bar = box(0.18, 0.1, 0.34, mat); bar.position.set(bx, by, bz); bar.rotation.y = ry; bucket.add(bar);
+  }
+  g.add(bucket);
+
+  // Elf driver in the cab, hands forward at the controls.
+  const elf = buildElf();
+  elf.scale.setScalar(0.55);
+  elf.position.set(0, 0.82, -0.45);
+  g.add(elf);
+
+  g.traverse((o) => o.isMesh && (o.castShadow = true));
+  g.userData.bucket = bucket;
+  g.userData.bucketX0 = bucket.rotation.x; // level (0); tips forward to dump
+  g.userData.arms = elf.userData.arms; // work the controls / brace in panic
   return g;
 }
 
@@ -844,65 +1040,120 @@ function nearMountain(x, z) {
 // A site guard (navy uniform, hi-vis vest, peaked cap) standing by a gate. The
 // returned object exposes the right arm pivot so it can beckon trucks in.
 function placeGuard(x, z, rot) {
-  const { group, wave, gun, muzzle } = buildGuard();
+  const { group, wave, larm, gun, muzzle } = buildGuard();
   group.position.set(x, 0, z);
   group.rotation.y = rot;
-  return { group, wave, gun, muzzle, pos: new THREE.Vector3(x, 0, z), baseYaw: rot };
+  return { group, wave, larm, gun, muzzle, pos: new THREE.Vector3(x, 0, z), baseYaw: rot };
 }
 
-function buildGuard() {
+// A soldier in three-color desert (DCU) camo: tan combat uniform with scattered
+// brown/grey camo patches, a tactical vest with mag pouches, black gloves, tan
+// combat boots, and a rounded combat helmet with ballistic sunglasses. Faces
+// +Z. Keeps the rig the animation depends on: `wave` (right-arm shoulder pivot
+// that beckons trucks), `gun` + `muzzle` (M4 across the chest), group yaw to aim.
+export function buildGuard() {
   const g = new THREE.Group();
-  const navy = new THREE.MeshLambertMaterial({ color: 0x2b3550 });
-  const vest = new THREE.MeshLambertMaterial({ color: 0xf2c14e });
-  const skin = new THREE.MeshLambertMaterial({ color: 0xe8b58f });
+  const tan = new THREE.MeshStandardMaterial({ color: 0xcdbb92, roughness: 0.9, metalness: 0.0 });
+  const vestMat = new THREE.MeshStandardMaterial({ color: 0xb3a079, roughness: 0.85, metalness: 0.0 });
+  const camoBrown = new THREE.MeshStandardMaterial({ color: 0x8a7553, roughness: 0.92, metalness: 0.0 });
+  const camoGrey = new THREE.MeshStandardMaterial({ color: 0xa39d8c, roughness: 0.9, metalness: 0.0 });
+  const helmetMat = new THREE.MeshStandardMaterial({ color: 0xbfae84, roughness: 0.85, metalness: 0.0 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x1b1b1f, roughness: 0.6, metalness: 0.1 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x101216, roughness: 0.15, metalness: 0.4 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xd2a07a, roughness: 0.75, metalness: 0.0 });
+  const bx = (w, h, d, mat) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  const sphere = (r, mat, seg = 14) => new THREE.Mesh(new THREE.SphereGeometry(r, seg, Math.max(8, seg - 4)), mat);
+  // a flat camo patch laid just proud of a surface (scatters the DCU pattern)
+  const patch = (mat, w, h, d, x, y, z) => { const m = bx(w, h, d, mat); m.position.set(x, y, z); g.add(m); };
 
+  // Legs (tan trousers) + tan combat boots.
   for (const x of [-0.2, 0.2]) {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.9, 0.32), navy);
-    leg.position.set(x, 0.45, 0);
+    const leg = bx(0.3, 0.82, 0.34, tan);
+    leg.position.set(x, 0.56, 0);
     g.add(leg);
+    const boot = bx(0.32, 0.2, 0.46, black);
+    boot.position.set(x, 0.1, 0.06);
+    g.add(boot);
   }
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.95, 0.5), navy);
+
+  // Torso (camo jacket) + tactical vest with pouches and shoulder straps.
+  const torso = bx(0.8, 0.95, 0.5, tan);
   torso.position.y = 1.35;
   g.add(torso);
-  const hiviz = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.7, 0.54), vest);
-  hiviz.position.y = 1.45;
-  g.add(hiviz);
-  // left arm (static, at side)
-  const larm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.85, 0.26), navy);
-  larm.position.set(-0.52, 1.3, 0);
+  const vest = bx(0.88, 0.74, 0.56, vestMat);
+  vest.position.y = 1.45;
+  g.add(vest);
+  for (const px of [-0.22, 0, 0.22]) {
+    const pouch = bx(0.18, 0.22, 0.1, camoBrown);
+    pouch.position.set(px, 1.32, 0.31);
+    g.add(pouch);
+  }
+  for (const sx of [-0.3, 0.3]) {
+    const strap = bx(0.1, 0.72, 0.06, camoBrown);
+    strap.position.set(sx, 1.46, 0.28);
+    g.add(strap);
+  }
+
+  // Scattered camo patches on the uniform.
+  patch(camoBrown, 0.26, 0.22, 0.02, -0.18, 1.55, 0.26);
+  patch(camoGrey, 0.22, 0.18, 0.02, 0.2, 1.2, 0.26);
+  patch(camoBrown, 0.02, 0.3, 0.26, 0.41, 1.4, 0);
+  patch(camoGrey, 0.24, 0.24, 0.02, -0.2, 0.62, 0.18);
+  patch(camoBrown, 0.26, 0.2, 0.02, 0.2, 0.5, 0.18);
+
+  // Left (support) arm on a shoulder pivot so it can ride the rifle's foregrip
+  // when idle and rise into a firing grip when aiming.
+  const larm = new THREE.Group();
+  larm.position.set(-0.52, 1.75, 0); // left shoulder
+  const lupper = bx(0.21, 0.7, 0.23, tan);
+  lupper.position.y = -0.38;
+  larm.add(lupper);
+  const lglove = bx(0.2, 0.2, 0.22, black);
+  lglove.position.y = -0.82;
+  larm.add(lglove);
+  larm.rotation.set(-1.2, 0, -0.35); // ready: hands on the rifle across the chest
   g.add(larm);
-  // right arm on a shoulder pivot so it can swing forward to beckon trucks in
+
+  // Right arm on a shoulder pivot so it can swing forward to beckon trucks in.
   const wave = new THREE.Group();
   wave.position.set(0.52, 1.75, 0); // shoulder
-  const upper = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.8, 0.24), navy);
-  upper.position.y = -0.4; // hang down from the shoulder pivot
+  const upper = bx(0.21, 0.72, 0.23, tan);
+  upper.position.y = -0.38; // hang down from the shoulder pivot
   wave.add(upper);
-  const mitt = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.24), vest);
-  mitt.position.y = -0.85;
-  wave.add(mitt);
+  const glove = bx(0.22, 0.2, 0.22, black);
+  glove.position.y = -0.82;
+  wave.add(glove);
   g.add(wave);
 
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), skin);
+  // Head + rounded combat helmet + ballistic sunglasses + chin strap.
+  const head = sphere(0.22, skin);
   head.position.y = 2.05;
   g.add(head);
-  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.5), navy);
-  cap.position.y = 2.32;
-  g.add(cap);
-  const peak = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.2), navy);
-  peak.position.set(0, 2.26, 0.32);
-  g.add(peak);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), helmetMat);
+  helmet.position.y = 2.12;
+  g.add(helmet);
+  const helmetRim = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.29, 0.08, 16), helmetMat);
+  helmetRim.position.y = 2.12;
+  g.add(helmetRim);
+  patch(camoBrown, 0.16, 0.12, 0.02, 0.1, 2.18, 0.22);
+  const glasses = bx(0.4, 0.11, 0.08, glassMat);
+  glasses.position.set(0, 2.04, 0.21);
+  g.add(glasses);
+  const strap = bx(0.36, 0.06, 0.34, tan);
+  strap.position.set(0, 1.9, 0.04);
+  g.add(strap);
 
-  // M-16 rifle held across the chest, pointing the guard's facing direction
+  // M4 rifle held across the chest, pointing the guard's facing direction
   // (local +Z). The whole guard yaws to aim, so the rifle tracks the target.
-  const gunMetal = new THREE.MeshLambertMaterial({ color: 0x23252b, flatShading: true });
-  const bx = (w, h, d) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), gunMetal);
+  const gunMetal = new THREE.MeshStandardMaterial({ color: 0x202228, roughness: 0.5, metalness: 0.6 });
+  const gb = (w, h, d) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), gunMetal);
   const gun = new THREE.Group();
   gun.position.set(0.16, 1.3, 0.2);
-  const stock = bx(0.1, 0.16, 0.34); stock.position.set(0, -0.02, -0.22);
-  const body = bx(0.1, 0.17, 0.5); body.position.set(0, 0, 0.06);
-  const mag = bx(0.08, 0.26, 0.12); mag.position.set(0, -0.18, 0.04);
-  const handle = bx(0.07, 0.1, 0.2); handle.position.set(0, 0.14, 0.04); // carry handle/sight
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.72, 6), gunMetal);
+  const stock = gb(0.1, 0.16, 0.34); stock.position.set(0, -0.02, -0.22);
+  const body = gb(0.1, 0.17, 0.5); body.position.set(0, 0, 0.06);
+  const mag = gb(0.08, 0.26, 0.12); mag.position.set(0, -0.18, 0.04);
+  const handle = gb(0.07, 0.1, 0.2); handle.position.set(0, 0.14, 0.04); // carry handle/sight
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.72, 8), gunMetal);
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0.03, 0.6);
   gun.add(stock, body, mag, handle, barrel);
@@ -915,7 +1166,7 @@ function buildGuard() {
     if (o.isMesh) o.castShadow = true;
   });
   g.scale.setScalar(0.95);
-  return { group: g, wave, gun, muzzle };
+  return { group: g, wave, larm, gun, muzzle };
 }
 
 // Gentle snow mounds dotted over the open snow for a bit of surface relief.

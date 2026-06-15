@@ -95,5 +95,15 @@ export function createAvalanche(scene, sfx) {
     justLanded: () => landedEvent, // true the frame the snow lands on the lane
     // the lane is a death zone from the moment the snow lands until it clears
     isHazard: () => (state === 'impact' && p >= 0.65) || state === 'settle',
+    // Seconds until the lane turns lethal (snow lands, p>=0.65). Infinity when
+    // idle, 0 once it's already deadly. Lets the fleet decide which trucks can
+    // still outrun the snow to the tunnel vs. which must hold.
+    secondsUntilLethal: () => {
+      const toLand = 0.65 * AVALANCHE.impactTime; // time from impact-start to landing
+      if (state === 'idle') return Infinity;
+      if (state === 'warning') return Math.max(0, timer) + toLand;
+      if (state === 'impact') return p >= 0.65 ? 0 : Math.max(0, timer - 0.35 * AVALANCHE.impactTime);
+      return 0; // settle — already lethal
+    },
   };
 }

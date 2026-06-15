@@ -49,7 +49,14 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
   const fireTimers = towers.map(() => 0);
 
   const bearMats = bearAssets();
-  const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffec99, fog: false });
+  // Per-round visuals: a fast tracer streak + a brief additive muzzle flash, so
+  // rapid fire reads as a stream of individual rounds, not one solid beam.
+  const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe27a, fog: false });
+  const flashMat = new THREE.MeshBasicMaterial({ color: 0xfff0b0, fog: false, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const bulletGeo = new THREE.BoxGeometry(0.08, 0.08, 0.9); // streak along local +Z
+  const flashGeo = new THREE.ConeGeometry(0.26, 0.55, 7);
+  flashGeo.rotateX(Math.PI / 2); // apex along +Z
+  const FWD = new THREE.Vector3(0, 0, 1);
 
   // Destructible fence: each scene segment carries its own HP + damage visuals,
   // plus an optional barbed-wire coil (installed by the Barbed Wire upgrade).
@@ -70,7 +77,7 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
   });
 
   const bears = []; // { group, pos, target, seg, hp, state:'approach'|'claw', clawT, phase }
-  const tracers = [];
+  const shots = []; // tracer bullets + muzzle flashes in flight
   let towerCount = 0;
   let fenceLevel = 0;
   let spawnTimer = BEARS.baseSpawnInterval * 0.6;
@@ -238,6 +245,8 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
       state: 'approach',
       clawT: 0,
       phase: Math.random() * 6,
+      walkPhase: Math.random() * 6,
+      walkSpeed: 0,
     });
   }
 
@@ -273,14 +282,31 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
     return best;
   }
 
-  function fire(from, bear) {
-    const to = bear.pos.clone().setY(1.0);
-    const len = from.distanceTo(to);
-    const tracer = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, len), tracerMat);
-    tracer.position.copy(from).lerp(to, 0.5);
-    tracer.lookAt(to);
+  // One round: a brief muzzle flash at the gun + a short tracer that streaks to
+  // the target. Called once per round, so rapid fire is a string of discrete
+  // flashes/tracers rather than a single continuous line of light.
+  function spawnShot(from, bear) {
+    const to = bear.pos.clone().setY(1.1);
+    const dir = to.clone().sub(from);
+    const dist = dir.length();
+    if (dist < 0.001) return;
+    dir.normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(FWD, dir);
+
+    const s0 = 0.7 + Math.random() * 0.5; // flicker the flash size per round
+    const flash = new THREE.Mesh(flashGeo, flashMat);
+    flash.position.copy(from);
+    flash.quaternion.copy(q);
+    flash.scale.setScalar(s0);
+    scene.add(flash);
+    shots.push({ mesh: flash, life: 0.05, max: 0.05, s0, flash: true });
+
+    const tracer = new THREE.Mesh(bulletGeo, tracerMat);
+    tracer.position.copy(from);
+    tracer.quaternion.copy(q);
     scene.add(tracer);
-    tracers.push({ mesh: tracer, life: 0.09 });
+    const speed = 130;
+    shots.push({ mesh: tracer, life: Math.min(0.3, dist / speed), vel: dir.multiplyScalar(speed) });
   }
 
   function killBear(b) {
@@ -307,12 +333,16 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
         dir.normalize();
         b.pos.addScaledVector(dir, spd * dt);
         b.group.rotation.y = -Math.atan2(dir.z, dir.x);
+        b.walkSpeed = spd; // record ground speed so the gait syncs (no foot-slip)
+      } else {
+        b.walkSpeed = 0;
       }
       return len;
     };
 
     for (let i = bears.length - 1; i >= 0; i--) {
       const b = bears[i];
+      b.walkSpeed = 0; // walk() sets this when the bear actually moves this frame
       if (b.state === 'approach') {
         if (walk(b, b.target, BEARS.speed) < 2.8) {
           b.state = 'claw';
@@ -356,8 +386,33 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
       }
       if (b.group) {
         b.group.position.set(b.pos.x, 0, b.pos.z);
+        const ud = b.group.userData;
+        const clawing = b.state === 'claw';
+        const moving = b.walkSpeed > 0.01;
         b.phase += dt * 9;
-        b.group.position.y = Math.abs(Math.sin(b.phase)) * 0.12;
+        // advance the stride with actual ground speed so the paws don't slip
+        if (moving) b.walkPhase += b.walkSpeed * dt * 2.2;
+
+        if (ud.legs) {
+          for (const leg of ud.legs) {
+            let swing = 0;
+            if (clawing && leg.front) {
+              swing = (0.5 + 0.5 * Math.sin(b.phase * 6 + leg.off)) * 0.9; // paw/rake at the fence
+            } else if (moving) {
+              swing = Math.sin(b.walkPhase + leg.off) * 0.5; // fore/aft stride
+            }
+            // ease toward the target so start/stop isn't snappy
+            leg.pivot.rotation.z += (swing - leg.pivot.rotation.z) * Math.min(1, dt * 12);
+          }
+        }
+
+        // body bob (two per stride, matching the diagonal gait) + head bob
+        b.group.position.y = moving ? Math.abs(Math.sin(b.walkPhase)) * 0.1 : 0;
+        if (ud.head) {
+          ud.head.position.y = 1.34
+            + (moving ? Math.sin(b.walkPhase * 2 + 0.5) * 0.04 : 0)
+            - (clawing ? (0.5 + 0.5 * Math.sin(b.phase * 6)) * 0.07 : 0);
+        }
       }
     }
 
@@ -373,21 +428,29 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
         // so the gunner stays upright instead of tipping forward at close range)
         const yaw = Math.atan2(target.pos.x - t.pos.x, target.pos.z - t.pos.z);
         t.mount.rotation.set(0, yaw, 0);
+        t.firing = true;
         fireTimers[i] -= dt;
         if (fireTimers[i] <= 0) {
           fireTimers[i] = BEARS.towerFireInterval;
           t.muzzle.getWorldPosition(muzzleW);
-          fire(muzzleW, target);
-          if (sfx) sfx.gunshot();
-          target.hp -= 1;
+          spawnShot(muzzleW, target);
+          target.hp -= BEARS.towerDamage;
           if (target.hp <= 0) killBear(target);
         }
       } else {
         // idle scan: sweep left/right around the inward-facing rest angle
+        t.firing = false;
         t.scanPhase += dt * 0.7;
         t.mount.rotation.set(0, t.baseYaw + Math.sin(t.scanPhase) * 1.2, 0);
       }
+      // Spin the barrel cluster: wind up while firing, coast down when idle.
+      const targetSpin = t.firing ? 42 : 0;
+      t.spinRate += (targetSpin - t.spinRate) * Math.min(1, dt * 5);
+      if (t.barrels) t.barrels.rotation.z += t.spinRate * dt;
     }
+    // One sustained minigun roar gated on whether ANY tower is firing (a single
+    // voice, not a one-shot per round — see sfx.minigun).
+    if (sfx) sfx.minigun(towers.some((t) => t.firing && t.group.visible));
 
     // gate guards: M-16s that track + shoot nearby bears. A bear right on top of
     // a guard can injure them — they go down for a while (replacement costs cash).
@@ -410,9 +473,9 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
         if (gd.fireT <= 0) {
           gd.fireT = GUARDS.fireInterval;
           gd.muzzle.getWorldPosition(gw);
-          fire(gw, target);
-          if (sfx) sfx.gunshot();
-          target.hp -= 1;
+          spawnShot(gw, target);
+          if (sfx) sfx.rifle();
+          target.hp -= GUARDS.damage || 1;
           if (target.hp <= 0) killBear(target);
         }
         // mauled if a (still-living) bear is right at the post
@@ -430,12 +493,15 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
       }
     }
 
-    // fade tracers
-    for (let i = tracers.length - 1; i >= 0; i--) {
-      tracers[i].life -= dt;
-      if (tracers[i].life <= 0) {
-        scene.remove(tracers[i].mesh);
-        tracers.splice(i, 1);
+    // advance tracers (fly to the target) + shrink/fade muzzle flashes
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i];
+      s.life -= dt;
+      if (s.vel) s.mesh.position.addScaledVector(s.vel, dt);
+      else if (s.flash) s.mesh.scale.setScalar(Math.max(0.01, (s.life / s.max) * s.s0));
+      if (s.life <= 0) {
+        scene.remove(s.mesh);
+        shots.splice(i, 1);
       }
     }
   }
@@ -521,37 +587,108 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
 }
 
 // --- meshes ---------------------------------------------------------------
-function bearAssets() {
+// PBR (MeshStandard) materials so the bears pick up the scene's soft
+// environment + sun: rough matte fur, a faintly glossy wet nose and eyes.
+export function bearAssets() {
   return {
-    fur: new THREE.MeshLambertMaterial({ color: 0x5a4632, flatShading: true }),
-    dark: new THREE.MeshLambertMaterial({ color: 0x3c2e20, flatShading: true }),
-    snout: new THREE.MeshLambertMaterial({ color: 0x8a7257, flatShading: true }),
+    fur: new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.95, metalness: 0.0 }),
+    dark: new THREE.MeshStandardMaterial({ color: 0x342a1d, roughness: 0.92, metalness: 0.0 }),
+    snout: new THREE.MeshStandardMaterial({ color: 0x8a7257, roughness: 0.85, metalness: 0.0 }),
+    nose: new THREE.MeshStandardMaterial({ color: 0x141110, roughness: 0.25, metalness: 0.1 }),
+    eye: new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.2, metalness: 0.0 }),
+    claw: new THREE.MeshStandardMaterial({ color: 0x1b1712, roughness: 0.5, metalness: 0.05 }),
   };
 }
 
-function buildBear(m) {
+// A refined low-poly grizzly facing +x (its travel direction). Rounded capsule
+// body with a shoulder hump, a domed head with muzzle/ears/eyes, four tapered
+// legs with clawed paws, and a stubby tail. Smooth-shaded for a soft, organic
+// read while staying low-poly.
+export function buildBear(m) {
   const g = new THREE.Group();
-  const body = box(2.4, 1.1, 1.5, m.fur);
-  body.position.set(-0.2, 1.0, 0);
+
+  // Trunk: a capsule lying along x, with a raised shoulder hump (grizzly).
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.62, 1.15, 6, 14), m.fur);
+  body.rotation.z = Math.PI / 2; // lie along x
+  body.position.set(-0.05, 1.12, 0);
   g.add(body);
-  const head = box(1.0, 0.95, 1.1, m.fur);
-  head.position.set(1.2, 1.25, 0);
+  const hump = ball(0.6, m.fur);
+  hump.scale.set(1, 0.85, 1);
+  hump.position.set(0.35, 1.5, 0);
+  g.add(hump);
+  const rump = ball(0.62, m.fur);
+  rump.position.set(-0.95, 1.15, 0);
+  g.add(rump);
+
+  // Head + muzzle + nose.
+  const head = ball(0.52, m.fur);
+  head.scale.set(1, 0.95, 1);
+  head.position.set(1.3, 1.34, 0);
   g.add(head);
-  const snout = box(0.5, 0.5, 0.6, m.snout);
-  snout.position.set(1.8, 1.1, 0);
-  g.add(snout);
-  for (const z of [-0.45, 0.45]) {
-    const ear = box(0.3, 0.32, 0.3, m.fur);
-    ear.position.set(1.0, 1.85, z);
+  const muzzle = bone(new THREE.Vector3(1.5, 1.22, 0), new THREE.Vector3(2.02, 1.18, 0), 0.34, 0.24, m.snout, 10);
+  g.add(muzzle);
+  const nose = ball(0.15, m.nose, 10);
+  nose.position.set(2.04, 1.2, 0);
+  g.add(nose);
+
+  // Ears (with darker inner) and eyes.
+  for (const z of [-0.42, 0.42]) {
+    const ear = ball(0.2, m.fur, 10);
+    ear.position.set(1.12, 1.82, z);
     g.add(ear);
+    const inner = ball(0.1, m.dark, 8);
+    inner.position.set(1.2, 1.82, z * 0.92);
+    g.add(inner);
+    const eye = ball(0.075, m.eye, 8);
+    eye.position.set(1.66, 1.46, z * 0.5);
+    g.add(eye);
   }
-  for (const x of [0.9, -0.9]) {
-    for (const z of [-0.5, 0.5]) {
-      const leg = box(0.45, 0.9, 0.45, m.dark);
-      leg.position.set(x, 0.45, z);
-      g.add(leg);
+
+  // Four tapered legs with clawed paws, each hung on a hip-pivot group so the
+  // limb can swing fore/aft for the walk cycle (driven in the update loop via
+  // g.userData.legs). The haunch muscle stays fixed — only the leg swings.
+  g.userData.legs = [];
+  const HIP_Y = 1.0;
+  const legSpec = [
+    [0.74, 0.5, 0.26, 0.22, false], // front
+    [-0.85, 0.52, 0.34, 0.24, true], // back (haunch)
+  ];
+  for (const [hipX, z0, rA, rB, haunch] of legSpec) {
+    for (const z of [-z0, z0]) {
+      if (haunch) {
+        const h = ball(0.46, m.fur);
+        h.scale.set(1, 1, 0.85);
+        h.position.set(hipX, 0.92, z);
+        g.add(h);
+      }
+      const pivot = new THREE.Group();
+      pivot.position.set(hipX, HIP_Y, z);
+      const footY = 0.16 - HIP_Y; // foot height relative to the hip
+      pivot.add(bone(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.04, footY, 0), rA, rB, m.dark));
+      const paw = ball(0.24, m.dark, 8);
+      paw.scale.set(1.1, 0.5, 1);
+      paw.position.set(0.12, footY - 0.08, 0);
+      pivot.add(paw);
+      for (const cz of [-0.12, 0, 0.12]) {
+        const claw = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.16, 6), m.claw);
+        claw.rotation.z = -Math.PI / 2;
+        claw.position.set(0.34, footY - 0.08, cz);
+        pivot.add(claw);
+      }
+      g.add(pivot);
+      // diagonal gait: front-left + back-right swing together, opposite pair antiphase
+      const front = !haunch;
+      const off = front ? (z < 0 ? 0 : Math.PI) : (z < 0 ? Math.PI : 0);
+      g.userData.legs.push({ pivot, off, front });
     }
   }
+
+  // Stubby tail.
+  const tail = ball(0.15, m.fur, 8);
+  tail.position.set(-1.5, 1.2, 0);
+  g.add(tail);
+
+  g.userData.head = head; // for a subtle head bob while walking/clawing
   g.traverse((o) => o.isMesh && (o.castShadow = true));
   g.scale.setScalar(1.05);
   return g;
@@ -566,6 +703,24 @@ function strut(a, b, radius, mat) {
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
   m.castShadow = true;
   return m;
+}
+
+// A tapered limb (cone-cylinder) spanning two points: radius rA at end `a`,
+// rB at end `b`. Used for the bears' legs and the gunner's posed arms.
+function bone(a, b, rA, rB, mat, seg = 8) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  // CylinderGeometry(radiusTop, radiusBottom): +y end (top) maps to `b`.
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rB, rA, len, seg), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  m.castShadow = true;
+  return m;
+}
+
+// A smooth-shaded low-poly sphere helper.
+function ball(r, mat, seg = 12) {
+  return new THREE.Mesh(new THREE.SphereGeometry(r, seg, Math.max(6, seg - 4)), mat);
 }
 
 // A concertina barbed-wire coil sitting just OUTSIDE a fence segment: a row of
@@ -606,12 +761,13 @@ function buildCoil(f) {
   return g;
 }
 
-function buildTower(spot) {
+export function buildTower(spot) {
   const g = new THREE.Group();
   const wood = new THREE.MeshLambertMaterial({ color: 0x5b4634, flatShading: true });
   const plat = new THREE.MeshLambertMaterial({ color: 0x6e5340, flatShading: true });
-  const steel = new THREE.MeshLambertMaterial({ color: 0x33343b, flatShading: true });
-  const gunMetal = new THREE.MeshLambertMaterial({ color: 0x222329, flatShading: true });
+  // The gun is metal — PBR so it catches the environment + sun as bright spec.
+  const steel = new THREE.MeshStandardMaterial({ color: 0x40424a, roughness: 0.5, metalness: 0.7 });
+  const gunMetal = new THREE.MeshStandardMaterial({ color: 0x202127, roughness: 0.38, metalness: 0.85 });
   const H = 4.6;
   for (const x of [-1, 1]) {
     for (const z of [-1, 1]) {
@@ -631,6 +787,25 @@ function buildTower(spot) {
     g.add(rail);
   }
 
+  // ---- Access ladder up the front face so the gunner can climb to the deck ----
+  const ladder = new THREE.Group();
+  const ladderMat = new THREE.MeshStandardMaterial({ color: 0x6b7079, roughness: 0.55, metalness: 0.75 });
+  const ladderTop = H + 0.5; // overshoot the deck for a handhold
+  for (const lx of [-0.32, 0.32]) {
+    const rail = box(0.08, ladderTop, 0.08, ladderMat);
+    rail.position.set(lx, ladderTop / 2, 0);
+    ladder.add(rail);
+  }
+  for (let r = 1; r * 0.45 < ladderTop; r++) {
+    const rung = box(0.72, 0.06, 0.07, ladderMat);
+    rung.position.set(0, r * 0.45, 0);
+    ladder.add(rung);
+  }
+  ladder.position.set(0, 0, 1.5); // just outside the front deck edge
+  ladder.rotation.x = -0.05; // lean the top in against the deck
+  ladder.traverse((o) => o.isMesh && (o.castShadow = true));
+  g.add(ladder);
+
   // ---- Tripod (fixed stand) — three splayed legs meeting under the gun ----
   const APEX = H + 1.35; // height of the gun pivot
   const apex = new THREE.Vector3(0, APEX, 0);
@@ -646,23 +821,54 @@ function buildTower(spot) {
   const mount = new THREE.Group();
   mount.position.set(0, APEX, 0);
 
-  const receiver = box(0.55, 0.5, 1.0, gunMetal); // big boxy body
-  receiver.position.set(0, 0.05, 0.15);
+  // ---- M134-style minigun: boxy receiver + motor, a spinning 6-barrel cluster,
+  // and a flexible ammo chute feeding from a can on the mount. ----
+  const receiver = box(0.62, 0.56, 0.9, gunMetal);
+  receiver.position.set(0, 0.05, 0.05);
   mount.add(receiver);
-  // perforated cooling jacket around the barrel
-  const jacket = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.1, 10), steel);
-  jacket.rotation.x = Math.PI / 2;
-  jacket.position.set(0, 0.1, 0.95);
-  mount.add(jacket);
-  // long thick barrel poking out of the jacket
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1.7, 8), gunMetal);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.1, 1.7);
-  mount.add(barrel);
-  // ammo box on the side + a belt stub
-  const ammo = box(0.5, 0.4, 0.6, new THREE.MeshLambertMaterial({ color: 0x4a5a32, flatShading: true }));
-  ammo.position.set(0.5, -0.05, 0.0);
+  const motor = box(0.5, 0.32, 0.5, gunMetal); // drive motor housing on top
+  motor.position.set(0, 0.42, -0.05);
+  mount.add(motor);
+  const facePlate = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.12, 14), steel);
+  facePlate.rotation.x = Math.PI / 2; // barrels exit through this plate
+  facePlate.position.set(0, 0.05, 0.52);
+  mount.add(facePlate);
+
+  // The rotating barrel cluster (spun about its +Z firing axis in update()).
+  const barrels = new THREE.Group();
+  barrels.position.set(0, 0.05, 0.55);
+  const BR = 0.13; // cluster radius
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    const bl = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.5, 8), gunMetal);
+    bl.rotation.x = Math.PI / 2; // lie along Z
+    bl.position.set(Math.cos(a) * BR, Math.sin(a) * BR, 0.75);
+    barrels.add(bl);
+  }
+  const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.5, 8), steel);
+  spindle.rotation.x = Math.PI / 2;
+  spindle.position.z = 0.75;
+  barrels.add(spindle);
+  for (const cz of [0.15, 1.35]) { // clamp rings holding the cluster together
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(BR, 0.045, 6, 16), steel);
+    ring.position.z = cz;
+    barrels.add(ring);
+  }
+  mount.add(barrels);
+
+  // Ammo can on the mount + a flexible feed chute curving up to the receiver.
+  const ammo = box(0.6, 0.5, 0.74, new THREE.MeshStandardMaterial({ color: 0x49592f, roughness: 0.6, metalness: 0.3 }));
+  ammo.position.set(0.62, -0.42, -0.2);
   mount.add(ammo);
+  const chuteCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0.31, 0.04, 0.0),    // feed port on the receiver side
+    new THREE.Vector3(0.52, -0.05, -0.05),
+    new THREE.Vector3(0.66, -0.22, -0.16),
+    new THREE.Vector3(0.62, -0.18, -0.2),  // down into the can
+  ]);
+  const chute = new THREE.Mesh(new THREE.TubeGeometry(chuteCurve, 24, 0.07, 8, false), gunMetal);
+  mount.add(chute);
+
   // twin spade grips at the back
   for (const x of [-0.22, 0.22]) {
     const grip = box(0.1, 0.45, 0.1, gunMetal);
@@ -676,9 +882,10 @@ function buildTower(spot) {
   gunner.position.set(0, -1.2, -0.85); // feet on the deck, manning the gun
   mount.add(gunner);
 
-  // muzzle marker (child of the mount) — tracers originate from its world pos
+  // muzzle marker (child of the mount, not the spinning cluster) — rounds
+  // originate from its world position.
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.1, 2.5);
+  muzzle.position.set(0, 0.05, 2.1);
   mount.add(muzzle);
 
   g.add(mount);
@@ -688,29 +895,96 @@ function buildTower(spot) {
   const baseYaw = Math.atan2(SITE_CENTER.x - spot.x, SITE_CENTER.z - spot.z);
   mount.rotation.y = baseYaw;
 
-  return { group: g, mount, muzzle, pos: spot.clone(), baseYaw, scanPhase: spot.x + spot.z };
+  return { group: g, mount, barrels, muzzle, pos: spot.clone(), baseYaw, scanPhase: spot.x + spot.z, spinRate: 0, firing: false, soundT: 0 };
 }
 
-function buildGunner() {
+// A refined low-poly Santa gunner facing +z (the gun's firing direction): a
+// flared coat, layered beard, domed head + bobbled hat, and jointed arms posed
+// forward onto the gun's spade grips. PBR materials catch the scene lighting.
+export function buildGunner() {
   const g = new THREE.Group();
-  const red = new THREE.MeshLambertMaterial({ color: 0xd0322d });
-  const white = new THREE.MeshLambertMaterial({ color: 0xf6f6f6 });
-  const skin = new THREE.MeshLambertMaterial({ color: 0xe8b58f });
-  const body = box(0.7, 0.9, 0.55, red);
-  body.position.y = 0.75;
-  g.add(body);
-  const head = box(0.4, 0.4, 0.4, skin);
-  head.position.y = 1.4;
+  const red = new THREE.MeshStandardMaterial({ color: 0xc62828, roughness: 0.7, metalness: 0.0 });
+  const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.7, metalness: 0.0 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.6, metalness: 0.0 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xe1a982, roughness: 0.75, metalness: 0.0 });
+  const gold = new THREE.MeshStandardMaterial({ color: 0xd9b44a, roughness: 0.3, metalness: 0.9 });
+
+  // Boots + legs.
+  for (const x of [-0.16, 0.16]) {
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.2, 0.42), black);
+    boot.position.set(x, 0.1, 0.08);
+    g.add(boot);
+    g.add(bone(new THREE.Vector3(x, 0.72, 0), new THREE.Vector3(x, 0.2, 0.02), 0.16, 0.14, red));
+  }
+
+  // Flared coat (tapered cylinder), white front trim, black belt + gold buckle.
+  const coat = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.44, 0.95, 14), red);
+  coat.position.y = 1.05;
+  g.add(coat);
+  const trim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.95, 0.05), white);
+  trim.position.set(0, 1.05, 0.4);
+  g.add(trim);
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.16, 14), black);
+  belt.position.y = 0.66;
+  g.add(belt);
+  const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.06), gold);
+  buckle.position.set(0, 0.66, 0.44);
+  g.add(buckle);
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.28, 0.12, 14), white);
+  collar.position.y = 1.46;
+  g.add(collar);
+
+  // Jointed arms posed forward onto the gun's spade grips (~ ±0.22, 1.12, 0.36),
+  // each on a shoulder PIVOT (default rotation 0 = this pose, so the gunner is
+  // unchanged) so the yard workers can swing them in a loading motion. Exposed
+  // via g.userData.arms.
+  g.userData.arms = [];
+  for (const x of [-0.34, 0.34]) {
+    const sx = Math.sign(x);
+    const shoulder = new THREE.Vector3(x, 1.4, 0);
+    const pivot = new THREE.Group();
+    pivot.position.copy(shoulder);
+    // bones/mitten in shoulder-local space (so the pivot rotates the whole arm)
+    const o = new THREE.Vector3(0, 0, 0);
+    const elbow = new THREE.Vector3(sx * 0.32 - x, 1.24 - 1.4, 0.22);
+    const hand = new THREE.Vector3(sx * 0.22 - x, 1.12 - 1.4, 0.4);
+    pivot.add(bone(o, elbow, 0.14, 0.12, red));
+    pivot.add(bone(elbow, hand, 0.12, 0.1, red));
+    const mitten = ball(0.12, white, 8);
+    mitten.position.copy(hand);
+    pivot.add(mitten);
+    g.add(pivot);
+    g.userData.arms.push(pivot);
+  }
+
+  // Domed head, layered curly beard, little nose.
+  const head = ball(0.22, skin);
+  head.position.set(0, 1.64, 0);
   g.add(head);
-  const beard = box(0.42, 0.34, 0.18, white);
-  beard.position.set(0, 1.28, 0.2);
-  g.add(beard);
-  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.5, 8), red);
-  hat.position.y = 1.75;
-  g.add(hat);
-  const brim = box(0.46, 0.14, 0.46, white);
-  brim.position.y = 1.55;
+  const beardTop = ball(0.21, white, 10);
+  beardTop.scale.set(1, 0.85, 0.7);
+  beardTop.position.set(0, 1.54, 0.12);
+  g.add(beardTop);
+  const beardLow = ball(0.14, white, 8);
+  beardLow.position.set(0, 1.4, 0.16);
+  g.add(beardLow);
+  const nose = ball(0.05, skin, 6);
+  nose.position.set(0, 1.6, 0.23);
+  g.add(nose);
+
+  // Red hat with a white brim ring and a bobble at the tip, tilted back a touch.
+  const brim = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.07, 8, 16), white);
+  brim.rotation.x = Math.PI / 2;
+  brim.position.y = 1.78;
   g.add(brim);
+  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.5, 12), red);
+  hat.position.set(0, 2.04, -0.04);
+  hat.rotation.x = -0.18;
+  g.add(hat);
+  const pom = ball(0.09, white, 8);
+  pom.position.set(0, 2.28, -0.12);
+  g.add(pom);
+
   g.traverse((o) => o.isMesh && (o.castShadow = true));
   return g;
 }

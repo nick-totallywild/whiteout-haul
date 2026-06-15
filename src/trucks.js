@@ -35,18 +35,20 @@ const REACTION_TIME = 0.4; // beat a stopped truck waits before pulling away (st
 // the inbound queue are clear. Keep in sync with avalanche.js chunk landing.
 const AVALANCHE_ZONE_MIN = -42;
 const AVALANCHE_ZONE_MAX = -14;
+// Escape-mode hold: trucks safely behind the zone wait at this stop line (just
+// clear of the danger edge); trucks already in the zone either make a run for
+// the tunnel or freeze. ESCAPE_BOOST is the extra speed a committed runner puts
+// on to outrun the snow, and SAFETY_MARGIN is the spare time it must keep so it
+// fully clears AVALANCHE_ZONE_MIN before the lane turns lethal.
+const STOP_LINE = AVALANCHE_ZONE_MAX + 3; // hold here, clear of the snow
+const ESCAPE_BOOST = 1.6; // runners floor it (×normal speed)
+const ESCAPE_SAFETY = 0.6; // seconds of spare time a runner must keep
 
-export function createFleet(scene) {
+export function createFleet(scene, sfx = null) {
   const loadSource = new THREE.Vector3(LAYOUT.pilePos.x, 2.6, LAYOUT.pilePos.z);
 
-  // Shared materials.
-  const bedMat = new THREE.MeshLambertMaterial({ color: COLORS.truckBed, flatShading: true });
-  const cabMat = new THREE.MeshLambertMaterial({ color: COLORS.truckCab, flatShading: true });
-  const wheelMat = new THREE.MeshLambertMaterial({ color: COLORS.truckWheel, flatShading: true });
-  const chassisMat = new THREE.MeshLambertMaterial({ color: 0x33343c, flatShading: true });
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x3f6b86, flatShading: true });
-  const bumperMat = new THREE.MeshLambertMaterial({ color: 0x9aa1ab, flatShading: true });
-  const headMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8, flatShading: true });
+  // The bed's load pile (recoloured by the gold share); the truck body's own
+  // materials live in the shared model (TM, see buildTruckMesh).
   const silverMat = new THREE.MeshLambertMaterial({ color: BRICK.silverColor });
   const goldMat = new THREE.MeshLambertMaterial({ color: BRICK.goldColor });
   const cargoGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
@@ -60,7 +62,8 @@ export function createFleet(scene) {
   let bays = 1; // number of parallel loading bays (front N trucks load at once)
   let loadingEnabled = true; // bears can pause loading while they maul the dock
   let obstacleX = null; // x of a bear blocking the lane — trucks stop behind it
-  let held = false; // avalanche: convoy frozen so the snow doesn't bury moving trucks
+  let holdMode = null; // avalanche hold: null=off, 'all'=freeze everyone, 'escape'=run-or-hold
+  let secondsUntilLethal = Infinity; // time before the lane is deadly (drives 'escape' triage)
   let deliverCb = null;
   const OBSTACLE_GAP = 3.4; // how far a truck stops short of a blocking bear
 
@@ -69,84 +72,16 @@ export function createFleet(scene) {
     return capacity / effLoadTime; // ~constant fill time regardless of capacity
   }
 
-  // --- Truck mesh: long dark chassis, white cab, tall orange dump bed --------
+  // --- Truck mesh: a Freightliner M2 106 dump truck (see buildTruckMesh) ------
   function buildTruck() {
-    const g = new THREE.Group();
-    const L = TRUCK.size.x;
-    const W = TRUCK.size.z;
-
-    const chassis = box(L * 1.02, 0.28, W * 0.78, chassisMat);
-    chassis.position.set(0.06, CHASSIS_TOP - 0.14, 0);
-    chassis.castShadow = true;
-    g.add(chassis);
-
-    // Front: white cab with windows, a lower hood (engine) ahead of it, then a
-    // grille, bumper and headlights so the nose reads as a proper dump truck.
-    const cab = box(L * 0.25, 1.35, W * 0.96, cabMat);
-    cab.position.set(L * 0.28, CHASSIS_TOP + 0.68, 0);
-    cab.castShadow = true;
-    g.add(cab);
-
-    const hood = box(L * 0.24, 0.72, W * 0.9, cabMat);
-    hood.position.set(L * 0.49, CHASSIS_TOP + 0.36, 0);
-    hood.castShadow = true;
-    g.add(hood);
-
-    // windshield (front) + a side window on each side of the cab
-    const windshield = box(0.12, 0.6, W * 0.82, glassMat);
-    windshield.position.set(L * 0.28 + L * 0.115, CHASSIS_TOP + 0.92, 0);
-    g.add(windshield);
-    for (const s of [-1, 1]) {
-      const win = box(L * 0.15, 0.5, 0.06, glassMat);
-      win.position.set(L * 0.27, CHASSIS_TOP + 0.9, s * (W * 0.49));
-      g.add(win);
-    }
-
-    // grille + bumper + headlights at the nose
-    const grille = box(0.16, 0.6, W * 0.78, chassisMat);
-    grille.position.set(L * 0.61, CHASSIS_TOP + 0.36, 0);
-    g.add(grille);
-    const bumper = box(0.34, 0.32, W * 1.0, bumperMat);
-    bumper.position.set(L * 0.62, CHASSIS_TOP + 0.02, 0);
-    bumper.castShadow = true;
-    g.add(bumper);
-    for (const s of [-1, 1]) {
-      const light = box(0.12, 0.18, 0.3, headMat);
-      light.position.set(L * 0.62, CHASSIS_TOP + 0.5, s * (W * 0.3));
-      g.add(light);
-    }
-
-    const bed = new THREE.Group();
-    const bedL = L * 0.62;
-    const wallH = 1.0;
-    const wt = 0.14;
-    bed.add(place(box(bedL, wt, W * 0.94, bedMat), 0, wt / 2, 0));
-    bed.add(place(box(wt, wallH, W * 0.94, bedMat), -bedL / 2 + wt / 2, wallH / 2, 0));
-    bed.add(place(box(wt, wallH, W * 0.94, bedMat), bedL / 2 - wt / 2, wallH / 2, 0));
-    bed.add(place(box(bedL, wallH, wt, bedMat), 0, wallH / 2, -W * 0.47 + wt / 2));
-    bed.add(place(box(bedL, wallH, wt, bedMat), 0, wallH / 2, W * 0.47 - wt / 2));
-    bed.position.set(-L * 0.16, CHASSIS_TOP, 0);
-    setShadows(bed);
-    g.add(bed);
-
-    const fill = box(bedL - wt * 2.5, BED_FILL_BASE_H, W * 0.94 - wt * 2.5, silverMat);
-    fill.position.y = wt + BED_FILL_BASE_H / 2;
+    const { group, bed, bedL, innerW, wt, floorTopY } = buildTruckMesh();
+    // the load pile that grows in the bed (recoloured silver/gold by applyFill)
+    const fill = box(bedL - wt * 3, BED_FILL_BASE_H, innerW - wt * 2, silverMat);
+    fill.position.y = floorTopY + BED_FILL_BASE_H / 2;
     bed.add(fill);
-
-    const wheelGeo = new THREE.CylinderGeometry(WHEEL_R, WHEEL_R, 0.42, 12);
-    wheelGeo.rotateX(Math.PI / 2);
-    const wz = W * 0.45;
-    for (const x of [L * 0.36, -L * 0.12, -L * 0.36]) {
-      for (const z of [-wz, wz]) {
-        const w = new THREE.Mesh(wheelGeo, wheelMat);
-        w.position.set(x, WHEEL_R, z);
-        w.castShadow = true;
-        g.add(w);
-      }
-    }
     // Trucks drive along -X, so the cab (+local X) faces the drive direction.
-    g.rotation.y = Math.PI;
-    return { group: g, fill };
+    group.rotation.y = Math.PI;
+    return { group, fill };
   }
 
   // Show how full the bed is (0..1) and tint by the gold share of the load.
@@ -213,9 +148,45 @@ export function createFleet(scene) {
     obstacleX = typeof x === 'number' ? x : null;
   }
 
-  // Freeze the whole convoy (avalanche): trucks stop dead, drivers take cover.
-  function setHold(on) {
-    held = !!on;
+  // Avalanche hold. mode 'all' freezes the whole convoy (drivers take cover).
+  // mode 'escape' is smarter: trucks close enough to the tunnel make a run for
+  // it (and clear the lane), trucks behind the zone wait at the stop line, and
+  // only trucks trapped mid-zone freeze in place. `sUntilLethal` is how long
+  // until the lane turns deadly — used to decide who can still outrun the snow.
+  function setHold(on, mode = 'all', sUntilLethal = Infinity) {
+    holdMode = on ? mode : null;
+    secondsUntilLethal = sUntilLethal;
+  }
+
+  // x at/below which a truck can still clear the death zone before the snow
+  // lands (driving out at the boosted escape speed, keeping a safety margin).
+  function commitLine() {
+    const escapeSpeed = speed * ESCAPE_BOOST;
+    const t = Math.max(0, secondsUntilLethal - ESCAPE_SAFETY);
+    return AVALANCHE_ZONE_MIN + escapeSpeed * t;
+  }
+
+  // Classify a truck for escape-mode hold: 'run' (floor it to the tunnel),
+  // 'hold' (safely behind the zone — wait at the stop line) or 'trap' (stuck in
+  // the zone, can't clear in time — freeze and eat the dent).
+  function escapeRole(tr, commitX) {
+    if (tr.x >= STOP_LINE) return 'hold';      // behind the danger — just wait it out
+    if (tr.x <= commitX) return 'run';         // can clear the tunnel in time
+    return 'trap';                             // in the zone, too late to escape
+  }
+
+  // How escape mode would triage the convoy right now (for the bot to reason
+  // about whether running beats a blanket hold). inZone counts trucks currently
+  // standing in the death zone.
+  function escapeTriage() {
+    const commitX = commitLine();
+    let run = 0, hold = 0, trap = 0, inZone = 0;
+    for (const tr of trucks) {
+      if (tr.x >= AVALANCHE_ZONE_MIN && tr.x <= AVALANCHE_ZONE_MAX) inZone++;
+      const role = escapeRole(tr, commitX);
+      if (role === 'run') run++; else if (role === 'hold') hold++; else trap++;
+    }
+    return { run, hold, trap, inZone };
   }
 
   // Called every frame while an avalanche covers the lane. Any truck that drives
@@ -224,13 +195,16 @@ export function createFleet(scene) {
   // replacement rig is dispatched from the back of the queue. If the convoy was
   // HELD the drivers took cover and nothing is lost.
   // Returns { count, replaceCost, lostLoad }.
+  // Only trucks caught MOVING in the zone are buried — a truck that's stopped
+  // (held, or frozen by escape-mode triage) took cover and is handled by
+  // dentHeldInZone instead.
   function crushInZone() {
-    if (held) return { count: 0, replaceCost: 0, lostLoad: 0 };
     let count = 0, replaceCost = 0, lostLoad = 0;
     let maxX = -Infinity;
     for (const tr of trucks) if (tr.x > maxX) maxX = tr.x;
     for (const tr of trucks) {
       if (tr.x < AVALANCHE_ZONE_MIN || tr.x > AVALANCHE_ZONE_MAX) continue; // clear of the snow
+      if (!tr.moving) continue; // stopped in the zone -> dig-out dent, not a burial
       // tally the loss: cargo it was hauling + a capacity-scaled replacement cost
       lostLoad += tr.silver * BRICK.silverValue + tr.gold * BRICK.goldValue;
       replaceCost += Math.round(AVALANCHE.replaceLoadMultiple * capacity * EXP_PER_BRICK);
@@ -253,10 +227,10 @@ export function createFleet(scene) {
   // dig-out/repair hit (a fraction of a replacement). They keep their cargo and
   // position. Returns { count, cost }.
   function dentHeldInZone() {
-    if (!held) return { count: 0, cost: 0 }; // moving trucks are handled by crushInZone
     let count = 0, cost = 0;
     for (const tr of trucks) {
       if (tr.x < AVALANCHE_ZONE_MIN || tr.x > AVALANCHE_ZONE_MAX) continue;
+      if (tr.moving) continue; // a truck still rolling gets buried (crushInZone), not dented
       cost += Math.round(AVALANCHE.replaceLoadMultiple * capacity * EXP_PER_BRICK * AVALANCHE.dentCostFraction);
       count++;
     }
@@ -277,19 +251,28 @@ export function createFleet(scene) {
     m.castShadow = true;
     scene.add(m);
     const bedTop = tr.group.position.clone().add(new THREE.Vector3(0, 1.6, 0));
-    transfers.push({ mesh: m, from: loadSource.clone(), to: bedTop, p: 0 });
+    transfers.push({ mesh: m, from: loadSource.clone(), to: bedTop, p: 0, gold: isGold });
   }
 
   function update(dt) {
-    // Avalanche hold: the convoy is frozen in place (and not loading) until it
-    // passes. Commit current positions + keep flying bricks animating, then bail.
-    if (held) {
-      for (const tr of trucks) tr.group.position.set(tr.x, 0.04, Z);
+    // Avalanche hold, 'all' mode: freeze the whole convoy in place (and stop
+    // loading) until it passes. Commit positions, keep flying bricks animating,
+    // then bail. 'escape' mode falls through and is handled per-truck below.
+    if (holdMode === 'all') {
+      // Drivers take cover: everyone stops dead. Marking them not-moving means a
+      // truck frozen in the zone takes the dig-out dent, not a full burial.
+      for (const tr of trucks) { tr.moving = false; tr.group.position.set(tr.x, 0.04, Z); }
+      if (sfx) sfx.engine(trucks.length ? 0.15 : 0); // engines idle while held
       updateTransfers(dt);
       return;
     }
 
     const step = speed * dt;
+    // 'escape' mode: trucks close enough to the tunnel make a run for it, trucks
+    // behind the zone wait at the stop line, trucks trapped in the zone freeze.
+    const escaping = holdMode === 'escape';
+    const commitX = escaping ? commitLine() : 0;
+    const escapeStep = speed * ESCAPE_BOOST * dt;
 
     // Advance every truck toward the exit (-X), keeping a gap behind the truck
     // ahead, and forbidding empty trucks from passing the bay until loaded.
@@ -298,12 +281,26 @@ export function createFleet(scene) {
     const order = trucks.slice().sort((a, b) => a.x - b.x); // front (min x) first
     for (let i = 0; i < order.length; i++) {
       const tr = order[i];
+      const wasMoving = tr.moving; // detect pull-away / stop transitions for SFX
       const ahead = i > 0 ? order[i - 1] : null;
       const aheadLimit = ahead ? ahead.x + GAP : -Infinity;
       const bayLimit = tr.loaded ? -Infinity : BAY_X; // empties stop at the bay
       // a bear on the lane blocks any truck behind it (higher x) — stop short
       const obstacleLimit = obstacleX !== null && tr.x > obstacleX ? obstacleX + OBSTACLE_GAP : -Infinity;
-      const minX = Math.max(aheadLimit, bayLimit, obstacleLimit);
+
+      // Escape-mode constraints: a runner gets a speed boost and bolts (no
+      // reaction beat); a holder stops at the stop line; a trapped truck freezes.
+      let role = null;
+      let avLimit = -Infinity;
+      let stepThis = step;
+      if (escaping) {
+        role = escapeRole(tr, commitX);
+        if (role === 'run') { stepThis = escapeStep; tr.moving = true; } // floor it
+        else if (role === 'hold') avLimit = STOP_LINE; // wait clear of the snow
+        else avLimit = tr.x; // trapped — hold position and eat the dig-out dent
+      }
+
+      const minX = Math.max(aheadLimit, bayLimit, obstacleLimit, avLimit);
       const room = tr.x - minX; // forward room (moving = decreasing x)
       if (room > 0.03) {
         tr.settled = false; // still has somewhere to go — not parked at a bay
@@ -311,11 +308,15 @@ export function createFleet(scene) {
           tr.reactT -= dt; // was stopped — wait a beat before pulling away
           if (tr.reactT <= 0) tr.moving = true;
         }
-        if (tr.moving) tr.x = Math.max(tr.x - step, minX);
+        if (tr.moving) tr.x = Math.max(tr.x - stepThis, minX);
       } else {
         tr.settled = true; // parked at its slot — only now may it load
         tr.moving = false; // reached its spot / blocked — stop and re-arm the beat
         tr.reactT = REACTION_TIME;
+      }
+      if (sfx) {
+        if (tr.moving && !wasMoving) sfx.truckAccel(); // pulling away
+        else if (!tr.moving && wasMoving) sfx.truckBrake(); // braking to a stop
       }
     }
 
@@ -353,6 +354,13 @@ export function createFleet(scene) {
       tr.group.position.set(tr.x, 0.04, Z);
     }
 
+    // Engine bed: louder/revvier the more of the convoy is rolling.
+    if (sfx) {
+      let movingCount = 0;
+      for (const tr of trucks) if (tr.moving) movingCount++;
+      sfx.engine(trucks.length ? Math.min(1, 0.18 + movingCount * 0.27) : 0);
+    }
+
     updateTransfers(dt);
   }
 
@@ -364,6 +372,7 @@ export function createFleet(scene) {
       if (f.p >= 1) {
         scene.remove(f.mesh);
         transfers.splice(i, 1);
+        if (sfx) sfx.clink(f.gold); // metal-on-metal as the bar lands in the bed
         continue;
       }
       f.mesh.position.lerpVectors(f.from, f.to, f.p);
@@ -373,83 +382,181 @@ export function createFleet(scene) {
     }
   }
 
-  return { setTruckCount, setSpeedLevel, setCapacityLevel, setBaysLevel, setLoadingEnabled, setObstacleX, setHold, crushInZone, dentHeldInZone, onDeliver, update };
+  // x positions of trucks currently STOPPED (settled at a slot) — the loaders
+  // only drive in to a truck that has actually pulled up and stopped.
+  function settledTruckXs() {
+    const xs = [];
+    for (const t of trucks) if (t.settled) xs.push(t.x);
+    return xs;
+  }
+
+  return { setTruckCount, setSpeedLevel, setCapacityLevel, setBaysLevel, setLoadingEnabled, setObstacleX, setHold, escapeTriage, settledTruckXs, crushInZone, dentHeldInZone, onDeliver, update };
 }
 
 // Standalone truck model for decorative parked trucks (same shape as the haul
 // trucks). Front (cab/nose) points along +local X; the caller orients it.
 export function buildParkedTruck() {
-  const bedMat = new THREE.MeshLambertMaterial({ color: COLORS.truckBed, flatShading: true });
-  const cabMat = new THREE.MeshLambertMaterial({ color: COLORS.truckCab, flatShading: true });
-  const wheelMat = new THREE.MeshLambertMaterial({ color: COLORS.truckWheel, flatShading: true });
-  const chassisMat = new THREE.MeshLambertMaterial({ color: 0x33343c, flatShading: true });
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x3f6b86, flatShading: true });
-  const bumperMat = new THREE.MeshLambertMaterial({ color: 0x9aa1ab, flatShading: true });
-  const headMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8, flatShading: true });
+  return buildTruckMesh().group;
+}
 
+// ---- Shared Freightliner M2 106 dump-truck model -------------------------
+// A conventional-cab dump truck: orange cab + sloped hood, a chrome grille with
+// round dual headlights and a heavy chrome bumper, an orange ribbed dump bed
+// with a cab-protector and a top rail that slopes down to the tailgate, on a
+// black frame with a single front axle and rear tandem duals. Built with the
+// cab/nose at +local X. Returns { group, bed, bedL, innerW, wt, floorTopY } so
+// the caller can drop the load-fill into the bed. PBR materials pick up the
+// scene environment (chrome reflects, paint has a faint sheen).
+const TM = {
+  paint: new THREE.MeshStandardMaterial({ color: COLORS.truckBed, roughness: 0.45, metalness: 0.12 }),
+  paintDark: new THREE.MeshStandardMaterial({ color: 0xc25e10, roughness: 0.5, metalness: 0.1 }),
+  chrome: new THREE.MeshStandardMaterial({ color: 0xd7dce2, roughness: 0.16, metalness: 1.0 }),
+  frame: new THREE.MeshStandardMaterial({ color: 0x23242a, roughness: 0.6, metalness: 0.5 }),
+  glass: new THREE.MeshStandardMaterial({ color: 0x2a3f4d, roughness: 0.12, metalness: 0.3 }),
+  grilleDark: new THREE.MeshStandardMaterial({ color: 0x14151a, roughness: 0.55, metalness: 0.7 }),
+  lens: new THREE.MeshStandardMaterial({ color: 0xfff3cf, roughness: 0.2, metalness: 0.1 }),
+  tire: new THREE.MeshStandardMaterial({ color: 0x141418, roughness: 0.85, metalness: 0.0 }),
+};
+
+function makeWheel(g, x, W, dual) {
+  const tireGeo = new THREE.CylinderGeometry(WHEEL_R, WHEEL_R, dual ? 0.6 : 0.36, 16);
+  tireGeo.rotateX(Math.PI / 2); // axle along Z (truck rolls along X)
+  const hubGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 12);
+  hubGeo.rotateX(Math.PI / 2);
+  for (const s of [-1, 1]) {
+    const outer = dual ? W * 0.5 : W * 0.48;
+    const tire = new THREE.Mesh(tireGeo, TM.tire);
+    tire.position.set(x, WHEEL_R, s * outer);
+    tire.castShadow = true;
+    g.add(tire);
+    const hub = new THREE.Mesh(hubGeo, TM.chrome);
+    hub.position.set(x, WHEEL_R, s * (outer + (dual ? 0.32 : 0.2)));
+    g.add(hub);
+  }
+}
+
+function buildTruckMesh() {
   const g = new THREE.Group();
-  const L = TRUCK.size.x;
-  const W = TRUCK.size.z;
+  const L = TRUCK.size.x, W = TRUCK.size.z, CT = CHASSIS_TOP;
 
-  const chassis = box(L * 1.02, 0.28, W * 0.78, chassisMat);
-  chassis.position.set(0.06, CHASSIS_TOP - 0.14, 0);
-  chassis.castShadow = true;
-  g.add(chassis);
+  // ---- Frame + fuel tanks ----
+  const frame = box(L * 1.04, 0.26, W * 0.64, TM.frame);
+  frame.position.set(0, CT - 0.18, 0);
+  g.add(frame);
+  for (const s of [-1, 1]) {
+    const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 1.0, 14), TM.chrome);
+    tank.rotation.z = Math.PI / 2; // lie along X
+    tank.position.set(L * 0.04, CT - 0.34, s * W * 0.42);
+    g.add(tank);
+  }
 
-  const cab = box(L * 0.25, 1.35, W * 0.96, cabMat);
-  cab.position.set(L * 0.28, CHASSIS_TOP + 0.68, 0);
-  cab.castShadow = true;
+  // ---- Cab (orange, conventional) ----
+  const cabX = L * 0.18;
+  const cab = box(L * 0.3, 1.4, W * 0.98, TM.paint);
+  cab.position.set(cabX, CT + 0.72, 0);
   g.add(cab);
-  const hood = box(L * 0.24, 0.72, W * 0.9, cabMat);
-  hood.position.set(L * 0.49, CHASSIS_TOP + 0.36, 0);
-  hood.castShadow = true;
+  const wsX = cabX + L * 0.15 - 0.02;
+  for (const s of [-1, 1]) {
+    const ws = box(0.1, 0.62, W * 0.4, TM.glass); // two raked windshield panes
+    ws.position.set(wsX, CT + 1.0, s * W * 0.22);
+    ws.rotation.z = 0.12;
+    g.add(ws);
+    const sw = box(L * 0.2, 0.46, 0.05, TM.glass); // side window
+    sw.position.set(cabX + 0.05, CT + 1.0, s * (W * 0.49));
+    g.add(sw);
+    const arm = box(0.05, 0.05, 0.42, TM.frame); // mirror arm + mirror
+    arm.position.set(cabX + L * 0.13, CT + 1.16, s * (W * 0.56));
+    g.add(arm);
+    const mir = box(0.07, 0.5, 0.16, TM.frame);
+    mir.position.set(cabX + L * 0.16, CT + 1.0, s * (W * 0.64));
+    g.add(mir);
+  }
+  const visor = box(L * 0.12, 0.06, W * 0.94, TM.paint); // sun visor over the screen
+  visor.position.set(wsX - 0.04, CT + 1.4, 0);
+  visor.rotation.z = 0.12;
+  g.add(visor);
+
+  // ---- Hood (sloped) + chrome grille + round headlights + bumper ----
+  const hoodX = L * 0.42;
+  const hood = box(L * 0.26, 0.92, W * 0.9, TM.paint);
+  hood.position.set(hoodX, CT + 0.48, 0);
   g.add(hood);
-  const windshield = box(0.12, 0.6, W * 0.82, glassMat);
-  windshield.position.set(L * 0.28 + L * 0.115, CHASSIS_TOP + 0.92, 0);
-  g.add(windshield);
-  for (const s of [-1, 1]) {
-    const win = box(L * 0.15, 0.5, 0.06, glassMat);
-    win.position.set(L * 0.27, CHASSIS_TOP + 0.9, s * (W * 0.49));
-    g.add(win);
+  const hoodTop = box(L * 0.28, 0.08, W * 0.9, TM.paint); // hint of a sloped top
+  hoodTop.position.set(hoodX + 0.02, CT + 0.92, 0);
+  hoodTop.rotation.z = 0.13;
+  g.add(hoodTop);
+
+  const noseX = L * 0.57;
+  const surround = box(0.14, 0.78, W * 0.6, TM.chrome);
+  surround.position.set(noseX, CT + 0.5, 0);
+  g.add(surround);
+  const mesh = box(0.08, 0.64, W * 0.48, TM.grilleDark);
+  mesh.position.set(noseX + 0.05, CT + 0.5, 0);
+  g.add(mesh);
+  for (let i = 0; i < 5; i++) {
+    const slat = box(0.1, 0.035, W * 0.48, TM.chrome);
+    slat.position.set(noseX + 0.07, CT + 0.26 + i * 0.13, 0);
+    g.add(slat);
   }
-  const grille = box(0.16, 0.6, W * 0.78, chassisMat);
-  grille.position.set(L * 0.61, CHASSIS_TOP + 0.36, 0);
-  g.add(grille);
-  const bumper = box(0.34, 0.32, W * 1.0, bumperMat);
-  bumper.position.set(L * 0.62, CHASSIS_TOP + 0.02, 0);
-  bumper.castShadow = true;
+  const badge = box(0.05, 0.13, 0.13, TM.chrome); // Freightliner badge
+  badge.position.set(noseX + 0.08, CT + 0.84, 0);
+  g.add(badge);
+  for (const s of [-1, 1]) {
+    const bezel = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 16), TM.chrome);
+    bezel.rotation.z = Math.PI / 2;
+    bezel.position.set(noseX + 0.02, CT + 0.4, s * W * 0.4);
+    g.add(bezel);
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.08, 16), TM.lens);
+    lens.rotation.z = Math.PI / 2;
+    lens.position.set(noseX + 0.1, CT + 0.4, s * W * 0.4);
+    g.add(lens);
+  }
+  const bumper = box(0.38, 0.4, W * 1.04, TM.chrome);
+  bumper.position.set(noseX + 0.12, CT - 0.06, 0);
   g.add(bumper);
-  for (const s of [-1, 1]) {
-    const light = box(0.12, 0.18, 0.3, headMat);
-    light.position.set(L * 0.62, CHASSIS_TOP + 0.5, s * (W * 0.3));
-    g.add(light);
-  }
 
+  // ---- Dump bed (orange, ribbed, sloped top rail, cab protector) ----
   const bed = new THREE.Group();
-  const bedL = L * 0.62;
-  const wallH = 1.0;
-  const wt = 0.14;
-  bed.add(place(box(bedL, wt, W * 0.94, bedMat), 0, wt / 2, 0));
-  bed.add(place(box(wt, wallH, W * 0.94, bedMat), -bedL / 2 + wt / 2, wallH / 2, 0));
-  bed.add(place(box(wt, wallH, W * 0.94, bedMat), bedL / 2 - wt / 2, wallH / 2, 0));
-  bed.add(place(box(bedL, wallH, wt, bedMat), 0, wallH / 2, -W * 0.47 + wt / 2));
-  bed.add(place(box(bedL, wallH, wt, bedMat), 0, wallH / 2, W * 0.47 - wt / 2));
-  bed.position.set(-L * 0.16, CHASSIS_TOP, 0);
-  setShadows(bed);
-  g.add(bed);
-
-  const wheelGeo = new THREE.CylinderGeometry(WHEEL_R, WHEEL_R, 0.42, 12);
-  wheelGeo.rotateX(Math.PI / 2);
-  const wz = W * 0.45;
-  for (const x of [L * 0.36, -L * 0.12, -L * 0.36]) {
-    for (const z of [-wz, wz]) {
-      const w = new THREE.Mesh(wheelGeo, wheelMat);
-      w.position.set(x, WHEEL_R, z);
-      w.castShadow = true;
-      g.add(w);
+  const bedL = L * 0.66;
+  const innerW = W * 0.92;
+  const wt = 0.1;
+  const hFront = 1.2, hRear = 0.8; // top rail slopes down toward the tailgate
+  const floorTopY = 0.12;
+  bed.add(place(box(bedL, 0.12, innerW + 2 * wt, TM.paint), 0, 0.06, 0)); // floor
+  const shape = new THREE.Shape();
+  shape.moveTo(-bedL / 2, 0);
+  shape.lineTo(bedL / 2, 0);
+  shape.lineTo(bedL / 2, hFront);
+  shape.lineTo(-bedL / 2, hRear);
+  shape.closePath();
+  const sideGeo = new THREE.ExtrudeGeometry(shape, { depth: wt, bevelEnabled: false });
+  sideGeo.translate(0, 0, -wt / 2);
+  for (const s of [-1, 1]) {
+    const wall = new THREE.Mesh(sideGeo, TM.paint);
+    wall.position.set(0, floorTopY, s * (innerW / 2 + wt / 2));
+    bed.add(wall);
+    const ribs = 5;
+    for (let i = 0; i < ribs; i++) {
+      const rx = -bedL / 2 + 0.32 + (i / (ribs - 1)) * (bedL - 0.64);
+      const hh = hRear + ((rx + bedL / 2) / bedL) * (hFront - hRear); // follow the slope
+      const rib = box(0.07, hh, 0.06, TM.paintDark);
+      rib.position.set(rx, floorTopY + hh / 2, s * (innerW / 2 + wt));
+      bed.add(rib);
     }
   }
-  return g;
+  bed.add(place(box(wt, hFront, innerW, TM.paint), bedL / 2 - wt / 2, floorTopY + hFront / 2, 0)); // headboard
+  bed.add(place(box(wt, hRear, innerW, TM.paintDark), -bedL / 2 + wt / 2, floorTopY + hRear / 2, 0)); // tailgate
+  bed.add(place(box(L * 0.22, 0.08, innerW + 2 * wt, TM.paint), bedL / 2 + L * 0.08, floorTopY + hFront, 0)); // cab protector
+  bed.position.set(-L * 0.18, CT, 0);
+  g.add(bed);
+
+  // ---- Wheels: single front axle, rear tandem duals ----
+  makeWheel(g, L * 0.4, W, false);
+  makeWheel(g, -L * 0.15, W, true);
+  makeWheel(g, -L * 0.4, W, true);
+
+  setShadows(g);
+  return { group: g, bed, bedL, innerW, wt, floorTopY };
 }
 
 // --- small geometry helpers ---
