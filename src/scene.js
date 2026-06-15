@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { COLORS, CAMERA, LAYOUT, TRUCK, ECONOMY } from './config.js';
 import { buildParkedTruck } from './trucks.js';
 
@@ -56,7 +57,8 @@ export function createWorld(canvas) {
   scene.add(buildDepots());
   const workers = buildWorkers();
   scene.add(workers.group);
-  scene.add(buildTrees());
+  const trees = buildTrees();
+  scene.add(trees.group);
   const snow = buildSnow();
   scene.add(snow.points);
 
@@ -173,7 +175,7 @@ export function createWorld(canvas) {
     truckXs = xs || [];
   }
 
-  return { scene, camera, renderer, fence, guards: gates.guards, setUnderAttack, setAvalancheHold, setTruckXs, update, render };
+  return { scene, camera, renderer, fence, guards: gates.guards, treeObstacles: trees.obstacles, setUnderAttack, setAvalancheHold, setTruckXs, update, render };
 }
 
 // Deterministic PRNG (mulberry32) so the forest/drift layout is stable across
@@ -294,50 +296,81 @@ function buildDepot(pos) {
 // loose clusters for a more natural treeline.
 function buildTrees() {
   const group = new THREE.Group();
+  const obstacles = []; // { x, z, r } footprints so bears can't walk through trees
   const rng = makeRng(1337);
+  // Bake every tree's geometry into a few merged meshes (one per material) so a
+  // dense forest costs a handful of draw calls instead of thousands.
+  const buckets = new Map(); // material -> [baked geometry, ...]
+  const bucketOf = (mat) => { let a = buckets.get(mat); if (!a) buckets.set(mat, (a = [])); return a; };
 
-  const onLot = (x, z) => x > -42 && x < 46 && z > -32 && z < 16;
+  // Keep a clear margin around the whole perimeter fence (x∈[-34,40], z∈[-30,15])
+  // so trees never crowd the fence or the barbed wire — a few metres of open
+  // ground all the way round, like a cleared firebreak.
+  const FENCE_CLEAR = 6;
+  const nearFence = (x, z) =>
+    x > -34 - FENCE_CLEAR && x < 40 + FENCE_CLEAR && z > -30 - FENCE_CLEAR && z < 15 + FENCE_CLEAR;
   const onRoad = (x, z) => z > -12 && z < -2; // drive corridor (full width)
   // Keep only a clear sightline corridor from the camera to the loading bay open;
   // the rest of the foreground (incl. the bottom of the screen) fills with trees.
   const blocksView = (x, z) => z > 6 && x > -2 && x < 30;
   const blocked = (x, z) =>
-    onLot(x, z) || onRoad(x, z) || blocksView(x, z) || nearMountain(x, z);
+    nearFence(x, z) || onRoad(x, z) || blocksView(x, z) || nearMountain(x, z);
 
+  const TARGET = 1000; // dense forest — bears stay hidden until near the fence
   let placed = 0;
   let guard = 0;
-  while (placed < 480 && guard < 36000) {
+  while (placed < TARGET && guard < 120000) {
     guard++;
-    // pick a cluster seed, then drop a few trees around it. Bias toward the
-    // foreground bottom (around the buttons), front-left, and behind the dock.
+    // pick a cluster seed, then drop a tight clump of trees around it. Bias
+    // toward the foreground (the bears' approach band) so they're well hidden.
     let sx, sz;
     const r = rng();
-    if (r < 0.28) {
-      sx = -100 + rng() * 200; // foreground bottom, full width
-      sz = 16 + rng() * 44; // [16, 60]
-    } else if (r < 0.48) {
-      sx = -110 + rng() * 86; // [-110, -24] front-left band
-      sz = -8 + rng() * 64; // [-8, 56]
-    } else if (r < 0.68) {
-      sx = -110 + rng() * 220; // full width
-      sz = -82 + rng() * 48; // [-82, -34] background band behind the dock
+    if (r < 0.42) {
+      sx = -110 + rng() * 220; // foreground/approach band, full width
+      sz = 16 + rng() * 46; // [16, 62]
+    } else if (r < 0.6) {
+      sx = -120 + rng() * 96; // [-120, -24] front-left band
+      sz = -8 + rng() * 70; // [-8, 62]
+    } else if (r < 0.78) {
+      sx = -120 + rng() * 240; // full width
+      sz = -84 + rng() * 50; // [-84, -34] background band behind the dock
     } else {
-      sx = -110 + rng() * 220; // [-110, 110]
-      sz = -82 + rng() * 142; // [-82, 60]
+      sx = -120 + rng() * 240;
+      sz = -84 + rng() * 150;
     }
     if (blocked(sx, sz)) continue;
-    const clusterN = 1 + Math.floor(rng() * 4);
-    for (let c = 0; c < clusterN && placed < 480; c++) {
-      const x = sx + (rng() - 0.5) * 9;
-      const z = sz + (rng() - 0.5) * 9;
+    const clusterN = 3 + Math.floor(rng() * 5); // 3-7 — denser clumps
+    for (let c = 0; c < clusterN && placed < TARGET; c++) {
+      const x = sx + (rng() - 0.5) * 8;
+      const z = sz + (rng() - 0.5) * 8;
       if (blocked(x, z)) continue;
       const backness = (15 - z) / 105; // ~1 far back, ~0 front
       const scale = 0.65 + rng() * 0.7 + Math.max(0, backness) * 0.8;
-      group.add(buildPine(x, z, scale, rng));
+      // build the tree, bake its world-space geometry into the merge buckets
+      const tree = buildPine(x, z, scale, rng);
+      tree.updateMatrixWorld(true);
+      tree.traverse((o) => {
+        if (!o.isMesh) return;
+        const geo = o.geometry.clone();
+        geo.applyMatrix4(o.matrixWorld);
+        bucketOf(o.material).push(geo);
+        o.geometry.dispose();
+      });
+      // collision footprint — trunk-sized so bears can squeeze between trunks
+      obstacles.push({ x, z, r: 0.8 * scale });
       placed++;
     }
   }
-  return group;
+  // merge each material's geometry into one mesh (a few draw calls total)
+  for (const [mat, geos] of buckets) {
+    const merged = mergeGeometries(geos, false);
+    geos.forEach((g) => g.dispose());
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  return { group, obstacles };
 }
 
 // Shared pine materials (built once, reused by every tree).
@@ -346,6 +379,7 @@ const PINE_FOLIAGE = [
   new THREE.MeshLambertMaterial({ color: COLORS.pineDark, flatShading: true }),
 ];
 const PINE_SNOW = new THREE.MeshLambertMaterial({ color: COLORS.pineSnow, flatShading: true });
+const PINE_SNOW2 = new THREE.MeshLambertMaterial({ color: 0xdde7f2, flatShading: true }); // cooler, faintly blue snow
 const PINE_TRUNK = new THREE.MeshLambertMaterial({ color: COLORS.treeTrunk, flatShading: true });
 
 // Painted loading-bay markings + numbers on the lane, one per potential bay
@@ -651,41 +685,61 @@ export function buildLoader() {
   return g;
 }
 
-// A low-poly evergreen: brown trunk, a stack of green foliage tiers (count and
-// proportions vary per tree), each dusted with a snow cap. A slight random lean
-// and rotation keep the forest from looking like a regular grid.
+// A snow-laden evergreen: a slim brown trunk under a TALL, narrow spire of
+// overlapping tiers, each one heavily blanketed in snow (green peeks out at the
+// tier edges) and topped with a frosted white tip — like the snowy boreal pines
+// in the reference photos. Per-tier jitter + a slight lean keep the forest natural.
 function buildPine(x, z, scale = 1, rng = Math.random) {
   const g = new THREE.Group();
   const foliage = PINE_FOLIAGE[rng() < 0.5 ? 0 : 1]; // mix two greens
+  const snowMat = rng() < 0.5 ? PINE_SNOW : PINE_SNOW2;
 
-  const trunkH = 1.0 + rng() * 0.8;
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.34, trunkH, 6), PINE_TRUNK);
+  // slim trunk
+  const trunkH = 0.7 + rng() * 0.6;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.2, trunkH, 6), PINE_TRUNK);
   trunk.position.y = trunkH / 2;
   trunk.castShadow = true;
   g.add(trunk);
 
-  const tierCount = 3 + (rng() < 0.5 ? 0 : 1); // 3 or 4 tiers
-  let y = trunkH + 0.1;
-  let r = 1.5 + rng() * 0.6;
+  // a tall, narrow column of tiers — irregular per tier (radius jitter + a tiny
+  // lateral offset + random spin) so it reads as a real snowy conifer, not a
+  // stack of identical cones. Snow blankets most of each tier; only a thin green
+  // skirt shows at the bottom, so the tree is white-dominant like the photos.
+  const tierCount = 5 + Math.floor(rng() * 3); // 5-7 tiers (feathery)
+  const snowLoad = 0.65 + rng() * 0.35;
+  let y = trunkH;
+  let r = 0.95 + rng() * 0.4; // slim base
   for (let i = 0; i < tierCount; i++) {
-    const h = r * 1.25;
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(r, h, 7), foliage);
-    cone.position.y = y + h / 2;
+    const rr = r * (1 + (rng() - 0.5) * 0.2); // per-tier radius jitter
+    const h = rr * 1.65;
+    const ox = (rng() - 0.5) * 0.22 * rr;
+    const oz = (rng() - 0.5) * 0.22 * rr;
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(rr, h, 6), foliage);
+    cone.position.set(ox, y + h / 2, oz);
+    cone.rotation.y = rng() * Math.PI;
     cone.castShadow = true;
     g.add(cone);
-    const cap = new THREE.Mesh(new THREE.ConeGeometry(r * 0.58, h * 0.4, 7), PINE_SNOW);
-    cap.position.y = y + h * 0.8;
-    g.add(cap);
-    y += h * 0.62; // overlap tiers
-    r *= 0.72; // each tier narrower
+    // heavy snow load: covers ~85-92% of the tier, white-dominant
+    const sr = rr * (0.9 + snowLoad * 0.08);
+    const sh = h * (0.78 + snowLoad * 0.14);
+    const snow = new THREE.Mesh(new THREE.ConeGeometry(sr, sh, 6), snowMat);
+    snow.position.set(ox, y + h - sh / 2 + 0.02, oz);
+    snow.rotation.y = rng() * Math.PI;
+    g.add(snow);
+    y += h * 0.48; // tight overlap -> dense, feathery column
+    r *= 0.8;
   }
+  // frosted snowy tip
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(r * 0.95, r * 1.8, 6), snowMat);
+  tip.position.y = y + r * 0.5;
+  g.add(tip);
 
   g.position.set(x, 0, z);
   g.scale.setScalar(scale);
   g.rotation.y = rng() * Math.PI * 2;
   // gentle lean
-  g.rotation.x = (rng() - 0.5) * 0.12;
-  g.rotation.z = (rng() - 0.5) * 0.12;
+  g.rotation.x = (rng() - 0.5) * 0.1;
+  g.rotation.z = (rng() - 0.5) * 0.1;
   return g;
 }
 

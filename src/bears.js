@@ -36,7 +36,8 @@ const WIRE_DPS = 1.3; // hp/sec the barbs tear off a bear caught chewing the coi
 const COLOR_FULL = new THREE.Color(0xdfe6ee);
 const COLOR_DMG = new THREE.Color(0x6b5644);
 
-export function createBears(scene, sfx, fenceSegments = [], guards = []) {
+export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObstacles = []) {
+  const BEAR_R = 1.0; // bear body radius for solid-object collision
   const group = new THREE.Group();
   scene.add(group);
 
@@ -315,6 +316,22 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
     if (i >= 0) bears.splice(i, 1);
   }
 
+  // Keep a bear out of solid tree footprints — if it has walked into one, shove
+  // it back to the edge so it slides around the trunk instead of through it.
+  function pushOutOfTrees(b) {
+    for (const t of treeObstacles) {
+      const dx = b.pos.x - t.x;
+      const dz = b.pos.z - t.z;
+      const minD = t.r + BEAR_R;
+      if (Math.abs(dx) > minD || Math.abs(dz) > minD) continue; // cheap broad phase
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= minD * minD || d2 < 1e-6) continue;
+      const push = (minD - Math.sqrt(d2)) / Math.sqrt(d2);
+      b.pos.x += dx * push;
+      b.pos.z += dz * push;
+    }
+  }
+
   function update(dt) {
     // spawning: raids come in waves of 2-3 bears, rarer with more barbed wire
     spawnTimer -= dt;
@@ -329,14 +346,32 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
       const dir = target.clone().sub(b.pos);
       dir.y = 0;
       const len = dir.length();
-      if (len > 0.001) {
-        dir.normalize();
-        b.pos.addScaledVector(dir, spd * dt);
-        b.group.rotation.y = -Math.atan2(dir.z, dir.x);
-        b.walkSpeed = spd; // record ground speed so the gait syncs (no foot-slip)
-      } else {
-        b.walkSpeed = 0;
+      if (len <= 0.001) { b.walkSpeed = 0; return len; }
+      dir.normalize();
+      // Steer AROUND trees that are ahead: add a tangential nudge (toward the
+      // side that points at the target) so the bear walks around the trunk
+      // instead of jamming into it and getting shoved straight back.
+      for (const t of treeObstacles) {
+        const dx = b.pos.x - t.x;
+        const dz = b.pos.z - t.z;
+        const avoid = t.r + BEAR_R + 1.4;
+        if (Math.abs(dx) > avoid || Math.abs(dz) > avoid) continue;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > avoid * avoid || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        if ((-dx / d) * dir.x + (-dz / d) * dir.z <= 0) continue; // tree is behind — ignore
+        let tx = -dz, tz = dx; // tangent (perpendicular to the bear→tree radial)
+        if (tx * dir.x + tz * dir.z < 0) { tx = -tx; tz = -tz; } // pick the side toward the target
+        const tl = Math.hypot(tx, tz) || 1;
+        const strength = ((avoid - d) / avoid) * 1.8; // stronger the closer it is
+        dir.x += (tx / tl) * strength;
+        dir.z += (tz / tl) * strength;
       }
+      dir.y = 0;
+      dir.normalize();
+      b.pos.addScaledVector(dir, spd * dt);
+      b.group.rotation.y = -Math.atan2(dir.z, dir.x);
+      b.walkSpeed = spd; // record ground speed so the gait syncs (no foot-slip)
       return len;
     };
 
@@ -384,6 +419,7 @@ export function createBears(scene, sfx, fenceSegments = [], guards = []) {
         }
         walk(b, b.target, BEARS.speed * 0.6);
       }
+      pushOutOfTrees(b); // can't walk through trees — slide around them
       if (b.group) {
         b.group.position.set(b.pos.x, 0, b.pos.z);
         const ud = b.group.userData;
