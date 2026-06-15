@@ -25,7 +25,7 @@ const economy = createEconomy();
 const sfx = createSfx(); // procedural sound: gunfire, bear roars, cash, alarm
 const fleet = createFleet(world.scene, sfx);
 const conveyor = createConveyor(world.scene);
-const bears = createBears(world.scene, sfx, world.fence.segments, world.guards); // bear raids + tower & guard defenses
+const bears = createBears(world.scene, sfx, world.fence.segments, world.guards, world.treeObstacles); // bear raids + tower & guard defenses
 const avalanche = createAvalanche(world.scene, sfx); // avalanche challenge
 const ui = createUI(economy, { onBuy: handleBuy });
 
