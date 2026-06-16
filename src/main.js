@@ -87,6 +87,22 @@ raidBanner.textContent = '🐻 BEAR RAID — loading halted!';
 raidBanner.style.display = 'none';
 document.body.appendChild(raidBanner);
 
+// Early-warning: bears spawn hidden in the dense forest, so flash an "incoming"
+// banner (with a rough compass direction) the moment a wave sets off.
+const incomingBanner = document.createElement('div');
+incomingBanner.id = 'incoming-banner';
+incomingBanner.style.display = 'none';
+document.body.appendChild(incomingBanner);
+let incomingT = 0;
+bears.onRaid((cx, cz) => {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const ang = Math.atan2(cx - 3, -(cz + 7)); // site centre ≈ (3,-7); N = -z, E = +x
+  const dir = dirs[(Math.round((ang / (Math.PI / 4)) + 8) % 8)];
+  incomingBanner.textContent = `🐻 Bears incoming — from the ${dir}!`;
+  incomingBanner.style.display = 'block';
+  incomingT = 4; // seconds visible
+});
+
 // Avalanche warning/impact banner.
 const avBanner = document.createElement('div');
 avBanner.id = 'avalanche-banner';
@@ -230,7 +246,20 @@ window.__avalanche = avalanche; // exposes avalanche state for verification
 fleet.onDeliver((payout) => {
   economy.add(payout);
   sfx.coin(); // ka-ching on every paid delivery
+  floatGain(payout); // a "+$X" pops off the cash counter
 });
+
+// A green "+$X" that floats up off the cash counter on each delivery.
+function floatGain(amount) {
+  if (document.querySelectorAll('.gain-toast').length > 8) return; // don't spam
+  const n = Math.round(amount);
+  const el = document.createElement('div');
+  el.className = 'gain-toast';
+  el.textContent = '+$' + (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n);
+  el.style.right = 26 + Math.random() * 36 + 'px'; // slight scatter so they don't stack
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1000);
+}
 
 // Browsers block audio until a user gesture — unlock on the first interaction.
 function unlockAudio() {
@@ -278,7 +307,7 @@ function stepOnce(dt) {
   fleet.setObstacleX(bears.laneBlockX());
   world.setUnderAttack(breached); // Santas scatter while bears are inside
   raidBanner.style.display = breached ? 'block' : 'none';
-  if (breached && !wasBreached) sfx.alarm(); // fence just went down
+  if (breached && !wasBreached) { sfx.alarm(); world.addShake(0.5); } // fence just went down
   wasBreached = breached;
 
   // Gate guards mauled by bears -> pay for replacements.
@@ -326,6 +355,10 @@ function stepOnce(dt) {
     lossFlashT -= dt;
     if (lossFlashT <= 0) { lossFlash.style.display = 'none'; lossAccum = 0; }
   }
+  if (incomingT > 0) {
+    incomingT -= dt;
+    if (incomingT <= 0) incomingBanner.style.display = 'none';
+  }
   // Manual hold is the panic button (freeze all); the bot may instead ask for
   // 'escape' so the trucks nearest the tunnel make a run for it.
   const wantHold = botHold || manualHold;
@@ -335,6 +368,7 @@ function stepOnce(dt) {
   // a partial dig-out/repair hit (they survive). Moving trucks are destroyed
   // continuously below for as long as the snow blocks the lane.
   if (avalanche.justLanded()) {
+    world.addShake(0.8); // the snow slams down — jolt the camera
     const dent = fleet.dentHeldInZone();
     if (dent.count > 0) {
       economy.spend(dent.cost);

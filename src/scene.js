@@ -6,6 +6,11 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { VignetteShader } from 'three/examples/jsm/shaders/VignetteShader.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { COLORS, CAMERA, LAYOUT, TRUCK, ECONOMY } from './config.js';
 import { buildParkedTruck } from './trucks.js';
 
@@ -62,15 +67,38 @@ export function createWorld(canvas) {
   const snow = buildSnow();
   scene.add(snow.points);
 
+  // ---- Post-processing: just a soft cold vignette (no bloom — it glared on all
+  // the white snow). Output pass keeps colour management correct.
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const vignette = new ShaderPass(VignetteShader);
+  vignette.uniforms.offset.value = 1.1;
+  vignette.uniforms.darkness.value = 1.0;
+  composer.addPass(vignette);
+  composer.addPass(new OutputPass());
+
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
     renderer.setSize(w, h, false);
+    composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
   window.addEventListener('resize', resize);
   resize();
+
+  // ---- Camera shake (avalanche impact / fence breach). Applied as a self-
+  // cancelling delta so it works regardless of the camera's base position.
+  let shakeAmt = 0;
+  const shakeOffset = new THREE.Vector3();
+  function addShake(amt) { shakeAmt = Math.min(0.9, Math.max(shakeAmt, amt)); }
+  function applyShake(dt) {
+    camera.position.sub(shakeOffset); // undo last frame's shake
+    shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
+    shakeOffset.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(shakeAmt);
+    camera.position.add(shakeOffset);
+  }
 
   let clock = 0;
   let underAttack = false; // bears inside the fence — Santas panic and scatter
@@ -79,6 +107,7 @@ export function createWorld(canvas) {
   const SERVE_RANGE = 5; // how close (in x, ≈1 truck slot) a stopped truck must be
   function update(dt) {
     clock += dt;
+    applyShake(dt);
     snow.update(dt);
     // Santas bob and shuffle while loading; when bears get inside they cower back
     // from the lane, spin to flee and jitter in a panic.
@@ -137,32 +166,20 @@ export function createWorld(canvas) {
         for (const arm of u.arms) arm.rotation.x = a;
       }
     }
-    // Guards stand at the post holding the rifle two-handed at the low ready;
-    // when a bear comes into range they smoothly raise it to a shouldered aim
-    // (a small, natural motion) and chatter with recoil.
+    // Guards hold the rifle two-handed at the low ready (muzzle dipped); when a
+    // bear comes into range they pitch the whole rifle rig up to a level aim and
+    // chatter with recoil. The rig is rigid, so both hands stay on the gun.
     for (const gd of gates.guards) {
-      if (gd.down) continue;
+      if (gd.down || !gd.rig) continue;
       gd.aimT = (gd.aimT || 0) + ((gd.aiming ? 1 : 0) - (gd.aimT || 0)) * Math.min(1, dt * 10);
       const a = gd.aimT;
-      const breathe = Math.sin(clock * 1.6 + gd.phase) * 0.03 * (1 - a); // subtle idle life
-      // right (trigger) hand stays on the grip; left (support) hand on the foregrip
-      gd.wave.rotation.x = -0.6 - 0.75 * a;
-      gd.wave.rotation.z = 0.5 - 0.1 * a;
-      if (gd.larm) {
-        gd.larm.rotation.x = -1.15 - 0.3 * a;
-        gd.larm.rotation.z = -0.4 - 0.15 * a;
-      }
-      // weapon: low-ready across the body -> shouldered and level when aiming
-      if (gd.gun) {
-        gd.gun.position.set(0.12 - 0.07 * a, 1.2 + 0.3 * a + breathe, 0.22 + 0.06 * a);
-        gd.gun.rotation.x = 0.18 * (1 - a); // muzzle dips at the ready, levels to aim
-        if (gd.aiming) gd.gun.position.z += Math.sin(clock * 46) * 0.02 * a; // recoil
-      }
+      const recoil = gd.aiming ? Math.sin(clock * 40) * 0.045 : 0;
+      gd.rig.rotation.x = 0.35 * (1 - a) + (-0.02 + recoil) * a; // low-ready -> level aim
     }
   }
 
   function render() {
-    renderer.render(scene, camera);
+    composer.render();
   }
 
   function setUnderAttack(v) {
@@ -175,7 +192,7 @@ export function createWorld(canvas) {
     truckXs = xs || [];
   }
 
-  return { scene, camera, renderer, fence, guards: gates.guards, treeObstacles: trees.obstacles, setUnderAttack, setAvalancheHold, setTruckXs, update, render };
+  return { scene, camera, renderer, fence, guards: gates.guards, treeObstacles: trees.obstacles, setUnderAttack, setAvalancheHold, setTruckXs, addShake, update, render };
 }
 
 // Deterministic PRNG (mulberry32) so the forest/drift layout is stable across
@@ -356,8 +373,9 @@ function buildTrees() {
         bucketOf(o.material).push(geo);
         o.geometry.dispose();
       });
-      // collision footprint — trunk-sized so bears can squeeze between trunks
-      obstacles.push({ x, z, r: 0.8 * scale });
+      // collision footprint — trunk-sized (the wide snowy canopies overlap
+      // freely) so bears can squeeze between the trunks in dense clumps
+      obstacles.push({ x, z, r: 0.45 * scale });
       placed++;
     }
   }
@@ -1094,10 +1112,10 @@ function nearMountain(x, z) {
 // A site guard (navy uniform, hi-vis vest, peaked cap) standing by a gate. The
 // returned object exposes the right arm pivot so it can beckon trucks in.
 function placeGuard(x, z, rot) {
-  const { group, wave, larm, gun, muzzle } = buildGuard();
+  const { group, rig, gun, muzzle } = buildGuard();
   group.position.set(x, 0, z);
   group.rotation.y = rot;
-  return { group, wave, larm, gun, muzzle, pos: new THREE.Vector3(x, 0, z), baseYaw: rot };
+  return { group, rig, gun, muzzle, pos: new THREE.Vector3(x, 0, z), baseYaw: rot };
 }
 
 // A soldier in three-color desert (DCU) camo: tan combat uniform with scattered
@@ -1155,29 +1173,7 @@ export function buildGuard() {
   patch(camoGrey, 0.24, 0.24, 0.02, -0.2, 0.62, 0.18);
   patch(camoBrown, 0.26, 0.2, 0.02, 0.2, 0.5, 0.18);
 
-  // Left (support) arm on a shoulder pivot so it can ride the rifle's foregrip
-  // when idle and rise into a firing grip when aiming.
-  const larm = new THREE.Group();
-  larm.position.set(-0.52, 1.75, 0); // left shoulder
-  const lupper = bx(0.21, 0.7, 0.23, tan);
-  lupper.position.y = -0.38;
-  larm.add(lupper);
-  const lglove = bx(0.2, 0.2, 0.22, black);
-  lglove.position.y = -0.82;
-  larm.add(lglove);
-  larm.rotation.set(-1.2, 0, -0.35); // ready: hands on the rifle across the chest
-  g.add(larm);
-
-  // Right arm on a shoulder pivot so it can swing forward to beckon trucks in.
-  const wave = new THREE.Group();
-  wave.position.set(0.52, 1.75, 0); // shoulder
-  const upper = bx(0.21, 0.72, 0.23, tan);
-  upper.position.y = -0.38; // hang down from the shoulder pivot
-  wave.add(upper);
-  const glove = bx(0.22, 0.2, 0.22, black);
-  glove.position.y = -0.82;
-  wave.add(glove);
-  g.add(wave);
+  // (the arms are part of the two-handed rifle rig built below)
 
   // Head + rounded combat helmet + ballistic sunglasses + chin strap.
   const head = sphere(0.22, skin);
@@ -1197,30 +1193,56 @@ export function buildGuard() {
   strap.position.set(0, 1.9, 0.04);
   g.add(strap);
 
-  // M4 rifle held across the chest, pointing the guard's facing direction
-  // (local +Z). The whole guard yaws to aim, so the rifle tracks the target.
+  // ---- Two-handed rifle rig --------------------------------------------------
+  // The M4 + both gloved hands + the arms are ONE rigid group (`rig`) pivoting at
+  // the chest. The hands are attached to the gun, so they always stay ON it;
+  // aiming just pitches the whole rig (low-ready → level). The guard yaws to aim,
+  // so the rifle points at the target.
   const gunMetal = new THREE.MeshStandardMaterial({ color: 0x202228, roughness: 0.5, metalness: 0.6 });
   const gb = (w, h, d) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), gunMetal);
+  const bone = (aV, bV, r, mat) => {
+    const dir = new THREE.Vector3().subVectors(bV, aV);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dir.length(), 6), mat);
+    m.position.copy(aV).addScaledVector(dir, 0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    return m;
+  };
+
+  const rig = new THREE.Group();
+  rig.position.set(0, 1.7, 0.05); // chest/shoulder pivot
+  g.add(rig);
+
+  // the rifle, pointing +Z, held forward at the chest
   const gun = new THREE.Group();
-  gun.position.set(0.16, 1.3, 0.2);
+  gun.position.set(0, -0.15, 0.34);
   const stock = gb(0.1, 0.16, 0.34); stock.position.set(0, -0.02, -0.22);
   const body = gb(0.1, 0.17, 0.5); body.position.set(0, 0, 0.06);
   const mag = gb(0.08, 0.26, 0.12); mag.position.set(0, -0.18, 0.04);
-  const handle = gb(0.07, 0.1, 0.2); handle.position.set(0, 0.14, 0.04); // carry handle/sight
+  const handle = gb(0.07, 0.1, 0.2); handle.position.set(0, 0.14, 0.04);
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.72, 8), gunMetal);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.03, 0.6);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.03, 0.6);
   gun.add(stock, body, mag, handle, barrel);
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.03, 1.0);
-  gun.add(muzzle);
-  g.add(gun);
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.03, 1.0); gun.add(muzzle);
+  // two gloved hands ON the gun (rear trigger grip + front foregrip)
+  const rHand = bx(0.13, 0.14, 0.16, black); rHand.position.set(0.05, 0.0, -0.06); gun.add(rHand);
+  const lHand = bx(0.13, 0.14, 0.16, black); lHand.position.set(-0.03, -0.02, 0.42); gun.add(lHand);
+  rig.add(gun);
+
+  // arms from the shoulders down to those two hands (so both arms hold the gun)
+  const rShoulder = new THREE.Vector3(0.34, 0.05, -0.06);
+  const lShoulder = new THREE.Vector3(-0.34, 0.05, -0.06);
+  const rHandRig = new THREE.Vector3(0.05, -0.15, 0.28); // gun.pos + rHand.pos
+  const lHandRig = new THREE.Vector3(-0.03, -0.17, 0.76); // gun.pos + lHand.pos
+  rig.add(bone(rShoulder, rHandRig, 0.1, tan));
+  rig.add(bone(lShoulder, lHandRig, 0.1, tan));
+
+  rig.rotation.x = 0.35; // default: low ready (muzzle dipped)
 
   g.traverse((o) => {
     if (o.isMesh) o.castShadow = true;
   });
   g.scale.setScalar(0.95);
-  return { group: g, wave, larm, gun, muzzle };
+  return { group: g, rig, gun, muzzle };
 }
 
 // Gentle snow mounds dotted over the open snow for a bit of surface relief.

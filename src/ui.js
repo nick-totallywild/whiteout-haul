@@ -29,6 +29,7 @@ function formatNumber(n) {
 export function createUI(economy, { onBuy } = {}) {
   const valueEl = document.getElementById('currency-value');
   const upgradesEl = document.getElementById('upgrades');
+  let shown = economy.state.cash; // smoothed display value for the count-up
 
   // Net cash-flow readout under the cash counter: upkeep cost + live net rate.
   const netEl = document.createElement('div');
@@ -60,8 +61,12 @@ export function createUI(economy, { onBuy } = {}) {
   }
 
   function update() {
-    // Currency counter.
-    if (valueEl) valueEl.textContent = formatNumber(economy.state.cash);
+    // Currency counter — ease the displayed value toward the real cash so a
+    // delivery visibly ticks it up (juicier than snapping).
+    const cash = economy.state.cash;
+    shown += (cash - shown) * 0.18;
+    if (Math.abs(cash - shown) < 1) shown = cash;
+    if (valueEl) valueEl.textContent = formatNumber(shown);
 
     // Upkeep + net cash flow. Red & flagged when the operation is losing money
     // (income isn't covering the running costs — e.g. trucks halted by a breach).

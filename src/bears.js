@@ -37,7 +37,8 @@ const COLOR_FULL = new THREE.Color(0xdfe6ee);
 const COLOR_DMG = new THREE.Color(0x6b5644);
 
 export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObstacles = []) {
-  const BEAR_R = 1.0; // bear body radius for solid-object collision
+  const BEAR_R = 0.7; // bear body radius for tree collision (slim, so it fits gaps)
+  let raidCb = null; // notified (cx, cz) when a wave spawns — for the HUD warning
   const group = new THREE.Group();
   scene.add(group);
 
@@ -256,16 +257,23 @@ export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObs
   function spawnWave() {
     const count = 2 + ((Math.random() * 2) | 0); // 2 or 3
     const grouped = Math.random() < 0.5;
+    const spots = [];
     if (grouped) {
       const base = SPAWN_SPOTS[(Math.random() * SPAWN_SPOTS.length) | 0];
       for (let i = 0; i < count; i++) {
-        // small scatter around the pack's entry point
-        spawnBear(V(base.x + (Math.random() - 0.5) * 7, base.z + (Math.random() - 0.5) * 7));
+        spots.push(V(base.x + (Math.random() - 0.5) * 7, base.z + (Math.random() - 0.5) * 7));
       }
     } else {
       // distinct directions: shuffle spots and take `count` different ones
       const idx = SPAWN_SPOTS.map((_, i) => i).sort(() => Math.random() - 0.5).slice(0, count);
-      for (const i of idx) spawnBear(SPAWN_SPOTS[i].clone());
+      for (const i of idx) spots.push(SPAWN_SPOTS[i].clone());
+    }
+    for (const s of spots) spawnBear(s);
+    // tell the HUD a raid is coming (the forest hides the bears) + roughly where
+    if (raidCb) {
+      const cx = spots.reduce((a, s) => a + s.x, 0) / spots.length;
+      const cz = spots.reduce((a, s) => a + s.z, 0) / spots.length;
+      raidCb(cx, cz);
     }
   }
 
@@ -350,8 +358,9 @@ export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObs
       dir.normalize();
       // Steer AROUND trees that are ahead: add a tangential nudge (toward the
       // side that points at the target) so the bear walks around the trunk
-      // instead of jamming into it and getting shoved straight back.
-      for (const t of treeObstacles) {
+      // instead of jamming into it and getting shoved straight back. Skipped
+      // while phasing (a stuck bear that's been freed to push straight through).
+      if (!b.phaseTrees) for (const t of treeObstacles) {
         const dx = b.pos.x - t.x;
         const dz = b.pos.z - t.z;
         const avoid = t.r + BEAR_R + 1.4;
@@ -378,6 +387,7 @@ export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObs
     for (let i = bears.length - 1; i >= 0; i--) {
       const b = bears[i];
       b.walkSpeed = 0; // walk() sets this when the bear actually moves this frame
+      const px = b.pos.x, pz = b.pos.z; // for stuck detection below
       if (b.state === 'approach') {
         if (walk(b, b.target, BEARS.speed) < 2.8) {
           b.state = 'claw';
@@ -419,7 +429,16 @@ export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObs
         }
         walk(b, b.target, BEARS.speed * 0.6);
       }
-      pushOutOfTrees(b); // can't walk through trees — slide around them
+      if (!b.phaseTrees) pushOutOfTrees(b); // can't walk through trees — slide around them
+      // Stuck fallback: if a bear that's trying to walk has barely moved (wedged
+      // in a thicket / spawned inside one), let it phase straight through the
+      // trees until it's moving freely again — a brief clip beats a frozen bear.
+      const moved = Math.hypot(b.pos.x - px, b.pos.z - pz);
+      const wanted = b.walkSpeed * dt;
+      if (wanted > 0.001 && moved < wanted * 0.4) b.stuckT = (b.stuckT || 0) + dt;
+      else b.stuckT = Math.max(0, (b.stuckT || 0) - dt * 2);
+      if (b.stuckT > 1.2) b.phaseTrees = true;
+      if (b.phaseTrees && (wanted < 0.001 || moved > wanted * 0.7)) { b.phaseTrees = false; b.stuckT = 0; }
       if (b.group) {
         b.group.position.set(b.pos.x, 0, b.pos.z);
         const ud = b.group.userData;
@@ -561,6 +580,7 @@ export function createBears(scene, sfx, fenceSegments = [], guards = [], treeObs
 
   return {
     update,
+    onRaid: (cb) => { raidCb = cb; },
     setTowerCount,
     setFenceLevel,
     beginWireEdit,
