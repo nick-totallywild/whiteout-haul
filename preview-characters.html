@@ -40,12 +40,10 @@ bear.position.set(-2.4, 0, 0); bear.rotation.y = -0.5; scene.add(bear);
 const loader = buildLoader();
 loader.position.set(2.6, 0, 0); loader.rotation.y = 0.7; scene.add(loader);
 
-// guard faces +Z; turn toward the camera. Posed at the LOW-READY stance (idle):
-// standing, both hands on the rifle, guarding the post.
+// guard faces +Z; turn toward the camera. Pitch the rifle rig to a level aim so
+// the two-handed hold reads in the still.
 const guard = buildGuard();
-guard.wave.rotation.x = -0.6; guard.wave.rotation.z = 0.5;
-guard.larm.rotation.x = -1.15; guard.larm.rotation.z = -0.4;
-guard.gun.position.set(0.12, 1.2, 0.22); guard.gun.rotation.x = 0.18;
+guard.rig.rotation.x = -0.02;
 guard.group.position.set(4.6, 0, 0); guard.group.rotation.y = 0.4; scene.add(guard.group);
 
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);

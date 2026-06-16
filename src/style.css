@@ -80,6 +80,25 @@ body {
   50% { opacity: 0.55; }
 }
 
+/* Floating "+$X" that pops off the cash counter on each paid delivery. */
+.gain-toast {
+  position: absolute;
+  top: 96px;
+  color: #8fe39a;
+  font-weight: 900;
+  font-size: 18px;
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  z-index: 20;
+  animation: gainfloat 1s ease-out forwards;
+}
+
+@keyframes gainfloat {
+  0% { opacity: 0; transform: translateY(16px) scale(0.9); }
+  18% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-30px) scale(1.06); }
+}
+
 /* Upkeep + net cash-flow readout, under the CASH label. */
 #net-readout {
   position: absolute;
@@ -230,6 +249,25 @@ body {
   color: #fff;
   font-weight: 900;
   font-size: 16px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  animation: raidpulse 0.7s ease-in-out infinite;
+}
+
+/* Early-warning that a raid is approaching through the trees — sits above the
+   "loading halted" banner so the two never overlap. */
+#incoming-banner {
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 18px;
+  background: rgba(206, 138, 42, 0.94);
+  border: 2px solid #ffe2b0;
+  border-radius: 12px;
+  color: #fff;
+  font-weight: 900;
+  font-size: 15px;
   letter-spacing: 0.5px;
   pointer-events: none;
   animation: raidpulse 0.7s ease-in-out infinite;

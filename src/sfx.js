@@ -263,20 +263,20 @@ export function createSfx() {
     slam.frequency.setValueAtTime(150 * heavy, t);
     slam.frequency.exponentialRampToValueAtTime(46 * heavy, t + 0.12);
     const slamG = ctx.createGain();
-    slamG.gain.setValueAtTime(0.28, t);
-    slamG.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    slamG.gain.setValueAtTime(0.18, t); // dialed back so the metallic ring dominates
+    slamG.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
     slam.connect(slamG).connect(master);
-    slam.start(t); slam.stop(t + 0.2);
+    slam.start(t); slam.stop(t + 0.18);
 
-    // 2) metallic CRASH — resonant noise at several inharmonic peaks (clanging
-    // scrap). Low peaks carry the weight; the bright ones give the metal edge.
+    // 2) metallic CRASH — resonant noise at several inharmonic peaks. Higher Q +
+    // longer decay so they RING (tonal, struck-metal) rather than just hiss.
     for (const [f, q, lvl, dur] of [
-      [300 * heavy * v, 10, 0.14, 0.18],
-      [680 * v, 13, 0.1, 0.18],
-      [1250 * v, 15, 0.08, 0.18],
-      [2400 * v, 16, 0.06, 0.16],
-      [3600 * v, 16, 0.045, 0.15],
-      [5200 * v, 14, 0.03, 0.12],
+      [300 * heavy * v, 12, 0.1, 0.3],
+      [680 * v, 16, 0.09, 0.34],
+      [1250 * v, 20, 0.09, 0.38],
+      [2400 * v, 22, 0.07, 0.34],
+      [3600 * v, 22, 0.05, 0.3],
+      [5200 * v, 18, 0.035, 0.24],
     ]) {
       const src = noiseSource();
       const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
@@ -288,10 +288,10 @@ export function createSfx() {
       src.start(t); src.stop(t + dur + 0.02);
     }
 
-    // Inharmonic ringing overtones — the clean "clang" shimmer that reads as
-    // metal sitting on top of the noisy crash.
-    const mb = 900 * v;
-    for (const [mult, lvl, dur] of [[1, 0.05, 0.22], [2.41, 0.04, 0.18], [3.86, 0.03, 0.15], [6.13, 0.02, 0.12]]) {
+    // Inharmonic ringing overtones — the struck-metal CLANG. Louder and ringing
+    // out far longer than the noise, so the hit reads as metal, not a thud.
+    const mb = 950 * v;
+    for (const [mult, lvl, dur] of [[1, 0.1, 0.6], [2.0, 0.08, 0.52], [2.76, 0.07, 0.46], [4.1, 0.05, 0.36], [5.6, 0.035, 0.28]]) {
       const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = mb * mult;
       const g = ctx.createGain();
       g.gain.setValueAtTime(0.0001, t);
